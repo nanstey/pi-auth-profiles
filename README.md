@@ -1,9 +1,9 @@
 # @nanstey/pi-auth-profiles
 
-Per-project auth profiles for [pi](https://pi.dev). Keep separate OAuth/API-key
-credentials per account (work, personal, client) and have `/login`, `/logout`,
-and token refresh operate on the right one automatically based on the repo
-you're in — no restart required.
+Configure multiple auth profiles for [pi](https://pi.dev). 
+
+Keep separate OAuth/API-key credentials per profile (default, work, personal, client) 
+and have `/login`, `/logout`, and token refresh operate based on the repo.
 
 ## Install
 
@@ -23,8 +23,14 @@ pi install npm:@nanstey/pi-auth-profiles
 
 Typical setup:
 
+Start pi tui:
 ```
 cd ~/work/some-repo
+pi
+```
+
+Configure auth profile:
+```
 /profile use work        # this repo now uses the "work" profile
 /login                   # credentials are saved to the work profile
 ```
