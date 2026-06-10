@@ -1,0 +1,35 @@
+{
+	"name": "@nanstey/pi-auth-profiles",
+	"version": "0.1.0",
+	"description": "Per-project auth profiles for pi — keep separate OAuth/API-key credentials per account and switch with /profile",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"extension",
+		"auth",
+		"oauth",
+		"profiles"
+	],
+	"author": "Noel Anstey",
+	"license": "MIT",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/nanstey/pi-auth-profiles"
+	},
+	"files": [
+		"extensions",
+		"README.md"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}
