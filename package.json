@@ -1,6 +1,6 @@
 {
 	"name": "@nanstey/pi-auth-profiles",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Per-project auth profiles for pi — keep separate OAuth/API-key credentials per account and switch with /profile",
 	"keywords": [
 		"pi-package",
