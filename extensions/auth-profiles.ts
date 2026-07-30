@@ -22,7 +22,7 @@
  *   /profile clear           remove this project's profile setting
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { FileAuthStorageBackend, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -70,14 +70,33 @@ function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">)
 	return { profile: DEFAULT_PROFILE, source: "built-in default" };
 }
 
-/** Point the session's live AuthStorage at the profile's credential file. */
-function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile: string): string {
+type InternalAuthStorage = {
+	constructor: { create(path?: string): InternalAuthStorage };
+};
+
+type InternalRuntime = {
+	credentials?: { store?: InternalAuthStorage };
+	forceRefreshAvailability?: () => Promise<unknown>;
+};
+
+/** Point the session's live credential store at the profile's file. */
+async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile: string): Promise<string> {
 	const path = authPathFor(profile);
-	// AuthStorage has no public API to swap its backend; `storage` is a plain
-	// runtime property, so rebind it and reload the credential cache.
-	const auth = ctx.modelRegistry.authStorage as unknown as { storage: unknown; reload(): void };
-	auth.storage = new FileAuthStorageBackend(path);
-	auth.reload();
+	// Pi no longer exposes its file-auth backend to extensions. Reuse the active
+	// store's factory so Pi retains its own locking, permissions, and reload logic.
+	const runtime = (ctx.modelRegistry as unknown as { runtime?: InternalRuntime }).runtime;
+	const store = runtime?.credentials?.store;
+	const create = store?.constructor?.create;
+	if (typeof create !== "function") {
+		throw new Error("Auth profiles is incompatible with this version of pi: credential storage cannot be switched.");
+	}
+	runtime.credentials!.store = create.call(store.constructor, path);
+
+	// Switching after startup otherwise leaves the model availability snapshot
+	// based on the previously selected profile.
+	if (typeof runtime.forceRefreshAvailability === "function") {
+		await runtime.forceRefreshAvailability();
+	}
 	return path;
 }
 
@@ -114,14 +133,15 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 export default function (pi: ExtensionAPI) {
 	let activeProfile = DEFAULT_PROFILE;
 
-	const rebind = (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
+	const rebind = async (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
 		const { profile, source } = resolveProfile(ctx);
+		const path = await bindProfile(ctx, profile);
 		activeProfile = profile;
-		return { profile, source, path: bindProfile(ctx, profile) };
+		return { profile, source, path };
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		const { profile, source } = rebind(ctx);
+		const { profile, source } = await rebind(ctx);
 		if (profile !== DEFAULT_PROFILE) {
 			ctx.ui.notify(`Auth profile: ${profile} (${source})`, "info");
 		}
@@ -174,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 						updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
 							settings.authProfile = profile;
 						});
-						const { path } = rebind(ctx);
+						const { path } = await rebind(ctx);
 						ctx.ui.notify(`Project auth profile set to ${profile}. /login now saves to ${path}`, "info");
 						return;
 					}
@@ -184,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 						updateJsonFile(globalConfigPath(), (config) => {
 							config.defaultProfile = profile;
 						});
-						const { profile: active, source } = rebind(ctx);
+						const { profile: active, source } = await rebind(ctx);
 						ctx.ui.notify(`Global default auth profile set to ${profile}. Active profile: ${active} (${source})`, "info");
 						return;
 					}
@@ -195,7 +215,7 @@ export default function (pi: ExtensionAPI) {
 								delete settings.authProfile;
 							});
 						}
-						const { profile, source } = rebind(ctx);
+						const { profile, source } = await rebind(ctx);
 						ctx.ui.notify(`Project auth profile cleared. Active profile: ${profile} (${source})`, "info");
 						return;
 					}
