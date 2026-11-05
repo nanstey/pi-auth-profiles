@@ -21,6 +21,8 @@ pi install npm:@nanstey/pi-auth-profiles
 /profile clear           remove this project's profile setting
 ```
 
+`/profile use` and `/profile clear` require the current project to be trusted.
+
 Typical setup:
 
 Start pi tui:

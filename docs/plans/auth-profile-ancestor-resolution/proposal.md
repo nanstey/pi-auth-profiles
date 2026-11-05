@@ -15,7 +15,7 @@ A shared account folder such as `~/Code/noelcf` can select an auth profile for a
 
 Pi's `ProjectTrustStore` canonicalizes a path, then walks its ancestors in `~/.pi/agent/trust.json` for the nearest `true` or `false` decision. A `true` trust entry applies to descendants and a nearer `false` overrides it. The extension requires `ctx.isProjectTrusted()` to consider `cwd/.pi/settings.json`. It searches above cwd only across an unbroken chain of persisted `true` decisions, stopping at the first missing or `false` decision. This prevents settings above a cwd-only or session-only trust grant from supplying a profile while preserving trusted cwd behavior.
 
-Malformed settings or trust JSON, empty `authProfile`, and invalid profile names retain existing safe behaviour: no project profile is selected or the existing error is reported for an invalid selected name.
+Malformed settings, empty `authProfile`, and invalid profile names retain existing safe behaviour: no project profile is selected or the existing error is reported for an invalid selected name. A trust-store read failure keeps cwd eligible in a trusted session, but cannot authorize any unread ancestor; a partial lookup retains only the persisted roots already read.
 
 ## QA
 
@@ -25,7 +25,7 @@ Malformed settings or trust JSON, empty `authProfile`, and invalid profile names
 
 ## Architecture
 
-Use Pi's public `ProjectTrustStore` export together with `ctx.isProjectTrusted()`. The store returns the persisted canonical trusted root for cwd; a local helper bounds the ancestor settings walk to that root. Do not import Pi's internal trust-manager module or duplicate its trust-file parsing.
+Use Pi's public `ProjectTrustStore` export together with `ctx.isProjectTrusted()`. A local helper follows the persisted canonical `true` chain and bounds the ancestor settings walk to its highest confirmed root. Do not import Pi's internal trust-manager module or duplicate its trust-file parsing.
 
 ## Affected areas
 

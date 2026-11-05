@@ -15,5 +15,5 @@
 
 ## Decision log
 
-- 2026-07-07 — Use a single slice. The installed Pi trust store resolves the nearest true/false ancestor entry, so settings lookup stops at the persisted trusted root for cwd.
-- 2026-07-07 — Validation passed with `bun /tmp/verify-auth-profiles-walk-up.mjs`; cross-model source review found no verified issues. PR #3 is open and ready for review.
+- 2026-07-07 — Use a single slice. Trusted sessions always consider cwd; ancestor lookup follows the installed Pi trust store's unbroken persisted `true` chain and stops at the first missing or `false` decision.
+- 2026-07-07 — Validation passed with focused isolated trust scenarios; source review corrected implicit-trust and persisted-chain handling. PR #3 is open and ready for review.
