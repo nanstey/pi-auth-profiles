@@ -2,7 +2,7 @@
 
 Configure multiple auth profiles for [pi](https://pi.dev). 
 
-Keep separate OAuth/API-key credentials per profile (default, work, personal, client) 
+Keep separate OAuth/API-key credentials per profile (default, work, personal, client)
 and have `/login`, `/logout`, and token refresh operate based on the repo.
 
 ## Install
@@ -55,34 +55,44 @@ The active profile is resolved per session, first match wins:
 This supports account-based repository roots without repeating the setting in every repository:
 
 ```text
-~/Code/
-  noelcf/
-    .pi/settings.json       # { "authProfile": "work" }
-    expedition/
-    tiger-team-sync/
-  nanstey/
-    .pi/settings.json       # { "authProfile": "default" }
-    skills/
-    bandbrain/
+~/
+  .pi/agent/auth-profiles.json   # { "defaultProfile": "personal" }
+  code/
+    scratch/                     # personal (no setting found, so defaultProfile applies)
+    work/
+      .pi/settings.json          # { "authProfile": "work" }
+      api/                       # work (inherited from work/)
+      web/
+        .pi/settings.json        # { "authProfile": "client-a" }
+                                 # client-a (nearest setting wins)
+        packages/ui/             # client-a (inherited from web/)
+    oss/
+      .pi/settings.json          # { "authProfile": "default" }
+      cli-tool/                  # default (plain auth.json)
 ```
 
-The closest setting wins, so a repository can still override its group when necessary. Trusted sessions always consider `cwd/.pi/settings.json`, including sessions trusted by `--approve`, `defaultProjectTrust`, or a session-only grant. Pi's trust store applies the nearest `true` or `false` decision in `~/.pi/agent/trust.json` to a directory and its descendants. This extension searches ancestors only across an unbroken persisted `true` trust chain; it stops at the first missing or `false` decision and never applies a setting outside that trusted tree. `/profile use` writes the cwd setting in every trusted session; resolution considers it for that session and for later trusted sessions. Pi itself only loads project resources from the current directory's `.pi`; this extension additionally walks parent directories **only** to select the auth profile.
+- A setting applies to every repository beneath it. The nearest one wins (`web/` over `work/`).
+- `"authProfile": "default"` is explicit: it selects plain `auth.json` and ignores `defaultProfile`.
+- With no setting in the tree, `defaultProfile` applies, then `default`.
 
-The extension rebinds pi's live credential storage at `session_start` (after
-project trust is resolved) and again whenever you run `/profile use`, so the
-built-in `/login`, `/logout`, and OAuth token refresh all read and write the
-active profile's file immediately.
+### Trust
 
-`.pi/settings.json` is committable, so a team repo can pin which profile name
-it expects without sharing any credentials.
+- Trusted sessions always read `cwd/.pi/settings.json`, however trust was granted (`--approve`, `defaultProjectTrust`, session-only grant).
+- Ancestor settings apply only across an unbroken chain of persisted `true` decisions in `~/.pi/agent/trust.json`. The search stops at the first missing or `false` decision.
+- Pi loads project resources only from the current directory's `.pi`. This extension also walks parent directories, only to select the auth profile.
+
+### Rebinding
+
+Credential storage is rebound at `session_start` (after trust is resolved) and on `/profile use`. `/login`, `/logout`, and OAuth refresh then use the active profile's file immediately.
+
+`.pi/settings.json` is committable, so a team repo can pin a profile name without sharing credentials. For personal use in a shared repo, you should prefer using the parent folder method.
 
 ## Notes
 
-- Profiles are isolated on purpose: a profile does **not** fall back to
-  `auth.json` for providers it lacks — log in once per profile instead.
-  Sharing OAuth credentials across files breaks when providers rotate refresh
-  tokens. Environment variables (`ANTHROPIC_API_KEY`, …) and `models.json`
-  keys still apply in every profile.
+- Profiles are isolated: a profile does **not** fall back to `auth.json` for
+  providers it lacks, so log in once per profile. Shared OAuth credentials break
+  when providers rotate refresh tokens. Environment variables
+  (`ANTHROPIC_API_KEY`, …) and `models.json` keys apply in every profile.
 - Profile names may contain letters, numbers, dots, underscores, and dashes.
 
 ## License
