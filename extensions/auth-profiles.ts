@@ -89,10 +89,19 @@ function findProjectProfile(cwd: string, trustedRoot: string): { profile: string
 	return undefined;
 }
 
+function persistedTrustedRoot(cwd: string): string | undefined {
+	try {
+		const trustEntry = new ProjectTrustStore(getAgentDir()).getEntry(cwd);
+		return trustEntry?.decision === true ? trustEntry.path : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): { profile: string; source: string } {
-	const trustEntry = new ProjectTrustStore(getAgentDir()).getEntry(ctx.cwd);
-	if (ctx.isProjectTrusted() && trustEntry?.decision === true) {
-		const project = findProjectProfile(ctx.cwd, trustEntry.path);
+	const trustedRoot = persistedTrustedRoot(ctx.cwd);
+	if (ctx.isProjectTrusted() && trustedRoot) {
+		const project = findProjectProfile(ctx.cwd, trustedRoot);
 		if (project) {
 			return { profile: project.profile, source: `project: ${project.settingsPath}` };
 		}
@@ -223,6 +232,13 @@ export default function (pi: ExtensionAPI) {
 						const profile = normalizeName(rawName);
 						if (!ctx.isProjectTrusted()) {
 							ctx.ui.notify("Project is not trusted; cannot set a project auth profile here.", "error");
+							return;
+						}
+						if (!persistedTrustedRoot(ctx.cwd)) {
+							ctx.ui.notify(
+								"Project auth profiles require a persisted trusted root; session-only trust cannot write or activate one.",
+								"error",
+							);
 							return;
 						}
 						updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
