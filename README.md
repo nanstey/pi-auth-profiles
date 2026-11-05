@@ -46,9 +46,25 @@ Each profile is a separate credential file:
 
 The active profile is resolved per session, first match wins:
 
-1. `"authProfile"` in `<project>/.pi/settings.json` — only when the project is trusted
+1. `"authProfile"` in the nearest `.pi/settings.json` at or above the working directory — only when the session is trusted under a persisted trusted ancestor
 2. `"defaultProfile"` in `~/.pi/agent/auth-profiles.json`
 3. `default` (plain `auth.json`, identical to pi without this extension)
+
+This supports account-based repository roots without repeating the setting in every repository:
+
+```text
+~/Code/
+  noelcf/
+    .pi/settings.json       # { "authProfile": "work" }
+    expedition/
+    tiger-team-sync/
+  nanstey/
+    .pi/settings.json       # { "authProfile": "default" }
+    skills/
+    bandbrain/
+```
+
+The closest setting wins, so a repository can still override its group when necessary. Pi's trust store applies the nearest `true` or `false` decision in `~/.pi/agent/trust.json` to a directory and its descendants. This extension requires the session cwd to be trusted and to inherit a persisted `true` trust entry; it only searches from cwd up to that entry's directory. It never applies a setting outside that trusted tree, including one above a cwd-only or session-only trust grant. Pi itself only loads project resources from the current directory's `.pi`; this extension additionally walks parent directories **only** to select the auth profile.
 
 The extension rebinds pi's live credential storage at `session_start` (after
 project trust is resolved) and again whenever you run `/profile use`, so the

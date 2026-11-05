@@ -6,9 +6,13 @@
  *   <name>         -> ~/.pi/agent/auth-profiles/<name>.json
  *
  * Profile selection (first match wins):
- *   1. "authProfile" in <cwd>/.pi/settings.json   (only when the project is trusted)
+ *   1. "authProfile" in the nearest <cwd-or-trusted-ancestor>/.pi/settings.json
+ *      (the session must inherit a persisted trusted ancestor)
  *   2. "defaultProfile" in ~/.pi/agent/auth-profiles.json
  *   3. "default"
+ *
+ * This lets a directory such as ~/Code/noelcf/.pi/settings.json select a
+ * profile for every repository below ~/Code/noelcf without duplicating it.
  *
  * The extension rebinds the live AuthStorage backend at session_start and on
  * /profile changes, so the built-in /login, /logout, and OAuth token refresh
@@ -22,9 +26,9 @@
  *   /profile clear           remove this project's profile setting
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 
 const DEFAULT_PROFILE = "default";
 
@@ -56,11 +60,41 @@ function readJsonFile(path: string): Record<string, unknown> | undefined {
 	}
 }
 
+function canonicalPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
+}
+
+function isWithin(directory: string, ancestor: string): boolean {
+	const path = relative(ancestor, directory);
+	return path === "" || (!path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && path !== ".." && !isAbsolute(path));
+}
+
+function findProjectProfile(cwd: string, trustedRoot: string): { profile: string; settingsPath: string } | undefined {
+	let directory = canonicalPath(cwd);
+	while (isWithin(directory, trustedRoot)) {
+		const settingsPath = projectSettingsPath(directory);
+		const profile = readJsonFile(settingsPath)?.authProfile;
+		if (typeof profile === "string" && profile.trim()) {
+			return { profile: normalizeName(profile), settingsPath };
+		}
+
+		const parent = dirname(directory);
+		if (parent === directory || directory === parse(directory).root) return undefined;
+		directory = parent;
+	}
+	return undefined;
+}
+
 function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): { profile: string; source: string } {
-	if (ctx.isProjectTrusted()) {
-		const project = readJsonFile(projectSettingsPath(ctx.cwd))?.authProfile;
-		if (typeof project === "string" && project.trim()) {
-			return { profile: normalizeName(project), source: "project" };
+	const trustEntry = new ProjectTrustStore(getAgentDir()).getEntry(ctx.cwd);
+	if (ctx.isProjectTrusted() && trustEntry?.decision === true) {
+		const project = findProjectProfile(ctx.cwd, trustEntry.path);
+		if (project) {
+			return { profile: project.profile, source: `project: ${project.settingsPath}` };
 		}
 	}
 	const global = readJsonFile(globalConfigPath())?.defaultProfile;
@@ -195,7 +229,11 @@ export default function (pi: ExtensionAPI) {
 							settings.authProfile = profile;
 						});
 						const { path } = await rebind(ctx);
-						ctx.ui.notify(`Project auth profile set to ${profile}. /login now saves to ${path}`, "info");
+						ctx.ui.notify(
+							`Project auth profile set to ${profile}. Settings: ${projectSettingsPath(ctx.cwd)}\n` +
+								`/login now saves to ${path}`,
+							"info",
+						);
 						return;
 					}
 					case "default": {
