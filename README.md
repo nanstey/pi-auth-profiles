@@ -21,6 +21,8 @@ pi install npm:@nanstey/pi-auth-profiles
 /profile clear           remove this project's profile setting
 ```
 
+`/profile use` and `/profile clear` require the current project to be trusted.
+
 Typical setup:
 
 Start pi tui:
@@ -46,9 +48,25 @@ Each profile is a separate credential file:
 
 The active profile is resolved per session, first match wins:
 
-1. `"authProfile"` in `<project>/.pi/settings.json` — only when the project is trusted
+1. `"authProfile"` in the nearest eligible `.pi/settings.json` at or above the working directory — trusted sessions always consider cwd; ancestors require an unbroken persisted-trust chain
 2. `"defaultProfile"` in `~/.pi/agent/auth-profiles.json`
 3. `default` (plain `auth.json`, identical to pi without this extension)
+
+This supports account-based repository roots without repeating the setting in every repository:
+
+```text
+~/Code/
+  noelcf/
+    .pi/settings.json       # { "authProfile": "work" }
+    expedition/
+    tiger-team-sync/
+  nanstey/
+    .pi/settings.json       # { "authProfile": "default" }
+    skills/
+    bandbrain/
+```
+
+The closest setting wins, so a repository can still override its group when necessary. Trusted sessions always consider `cwd/.pi/settings.json`, including sessions trusted by `--approve`, `defaultProjectTrust`, or a session-only grant. Pi's trust store applies the nearest `true` or `false` decision in `~/.pi/agent/trust.json` to a directory and its descendants. This extension searches ancestors only across an unbroken persisted `true` trust chain; it stops at the first missing or `false` decision and never applies a setting outside that trusted tree. `/profile use` writes the cwd setting in every trusted session; resolution considers it for that session and for later trusted sessions. Pi itself only loads project resources from the current directory's `.pi`; this extension additionally walks parent directories **only** to select the auth profile.
 
 The extension rebinds pi's live credential storage at `session_start` (after
 project trust is resolved) and again whenever you run `/profile use`, so the
