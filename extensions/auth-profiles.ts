@@ -90,12 +90,12 @@ function findProjectProfile(cwd: string, trustedRoot: string): { profile: string
 }
 
 function persistedTrustedRoot(cwd: string): string | undefined {
+	let trustedRoot: string | undefined;
 	try {
 		const trustStore = new ProjectTrustStore(getAgentDir());
 		let trustEntry = trustStore.getEntry(cwd);
-		let trustedRoot: string | undefined;
 		// A nearer true entry must not hide another trusted root above it.
-		// Stop at the first false or missing decision, never skipping a boundary.
+		// Stop at the first false or when no saved trust remains.
 		while (trustEntry?.decision === true) {
 			trustedRoot = trustEntry.path;
 			const parent = dirname(trustedRoot);
@@ -104,8 +104,8 @@ function persistedTrustedRoot(cwd: string): string | undefined {
 		}
 		return trustedRoot;
 	} catch {
-		// Failed lookups cannot authorize ancestor settings.
-		return undefined;
+		// A failed lookup cannot extend the known-safe boundary.
+		return trustedRoot;
 	}
 }
 
@@ -267,6 +267,10 @@ export default function (pi: ExtensionAPI) {
 						return;
 					}
 					case "clear": {
+						if (!ctx.isProjectTrusted()) {
+							ctx.ui.notify("Project is not trusted; cannot clear a project auth profile here.", "error");
+							return;
+						}
 						const path = projectSettingsPath(ctx.cwd);
 						if (existsSync(path)) {
 							updateJsonFile(path, (settings) => {

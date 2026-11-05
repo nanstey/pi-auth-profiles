@@ -13,7 +13,7 @@ A shared account folder such as `~/Code/noelcf` can select an auth profile for a
 
 ## Behaviour
 
-Pi's `ProjectTrustStore` canonicalizes a path, then walks its ancestors in `~/.pi/agent/trust.json` for the nearest `true` or `false` decision. A `true` trust entry applies to descendants and a nearer `false` overrides it. The extension will require both `ctx.isProjectTrusted()` and a persisted nearest `true` trust entry for the cwd. It searches only from cwd to that trusted entry's directory. This prevents settings above a cwd-only or session-only trust grant from supplying a profile.
+Pi's `ProjectTrustStore` canonicalizes a path, then walks its ancestors in `~/.pi/agent/trust.json` for the nearest `true` or `false` decision. A `true` trust entry applies to descendants and a nearer `false` overrides it. The extension requires `ctx.isProjectTrusted()` to consider `cwd/.pi/settings.json`. It searches above cwd only across an unbroken chain of persisted `true` decisions, stopping at the first missing or `false` decision. This prevents settings above a cwd-only or session-only trust grant from supplying a profile while preserving trusted cwd behavior.
 
 Malformed settings or trust JSON, empty `authProfile`, and invalid profile names retain existing safe behaviour: no project profile is selected or the existing error is reported for an invalid selected name.
 

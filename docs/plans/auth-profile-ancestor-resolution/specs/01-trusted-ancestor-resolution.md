@@ -2,8 +2,8 @@
 
 ## Implementation
 
-- [x] Walk from `ctx.cwd` to the persisted trusted root and select the nearest `.pi/settings.json` with a non-empty `authProfile`.
-- [x] Require the session cwd to be trusted and to inherit a persisted `true` trust entry, then stop the settings walk at that trusted root.
+- [x] In trusted sessions, select the nearest eligible `.pi/settings.json` with a non-empty `authProfile`, always including cwd.
+- [x] Walk above cwd only through an unbroken persisted `true` trust chain; stop at the first missing or `false` decision.
 - [x] Include the selected settings path in the project profile source shown by `/profile`.
 - [x] Keep `/profile use` and `/profile clear` scoped to `cwd/.pi/settings.json`.
 - [x] Update the extension header and README with the actual lookup and trust rule.
