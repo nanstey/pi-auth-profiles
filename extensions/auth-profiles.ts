@@ -7,7 +7,7 @@
  *
  * Profile selection (first match wins):
  *   1. "authProfile" in the nearest <cwd-or-trusted-ancestor>/.pi/settings.json
- *      (the session must inherit a persisted trusted ancestor)
+ *      (trusted sessions may use cwd; ancestors require unbroken persisted trust)
  *   2. "defaultProfile" in ~/.pi/agent/auth-profiles.json
  *   3. "default"
  *
@@ -91,16 +91,27 @@ function findProjectProfile(cwd: string, trustedRoot: string): { profile: string
 
 function persistedTrustedRoot(cwd: string): string | undefined {
 	try {
-		const trustEntry = new ProjectTrustStore(getAgentDir()).getEntry(cwd);
-		return trustEntry?.decision === true ? trustEntry.path : undefined;
+		const trustStore = new ProjectTrustStore(getAgentDir());
+		let trustEntry = trustStore.getEntry(cwd);
+		let trustedRoot: string | undefined;
+		// A nearer true entry must not hide another trusted root above it.
+		// Stop at the first false or missing decision, never skipping a boundary.
+		while (trustEntry?.decision === true) {
+			trustedRoot = trustEntry.path;
+			const parent = dirname(trustedRoot);
+			if (parent === trustedRoot) break;
+			trustEntry = trustStore.getEntry(parent);
+		}
+		return trustedRoot;
 	} catch {
+		// Failed lookups cannot authorize ancestor settings.
 		return undefined;
 	}
 }
 
 function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): { profile: string; source: string } {
-	const trustedRoot = persistedTrustedRoot(ctx.cwd);
-	if (ctx.isProjectTrusted() && trustedRoot) {
+	if (ctx.isProjectTrusted()) {
+		const trustedRoot = persistedTrustedRoot(ctx.cwd) ?? canonicalPath(ctx.cwd);
 		const project = findProjectProfile(ctx.cwd, trustedRoot);
 		if (project) {
 			return { profile: project.profile, source: `project: ${project.settingsPath}` };
@@ -232,13 +243,6 @@ export default function (pi: ExtensionAPI) {
 						const profile = normalizeName(rawName);
 						if (!ctx.isProjectTrusted()) {
 							ctx.ui.notify("Project is not trusted; cannot set a project auth profile here.", "error");
-							return;
-						}
-						if (!persistedTrustedRoot(ctx.cwd)) {
-							ctx.ui.notify(
-								"Project auth profiles require a persisted trusted root; session-only trust cannot write or activate one.",
-								"error",
-							);
 							return;
 						}
 						updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
