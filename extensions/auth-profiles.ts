@@ -28,7 +28,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const DEFAULT_PROFILE = "default";
 
@@ -83,7 +83,7 @@ function findProjectProfile(cwd: string, trustedRoot: string): { profile: string
 		}
 
 		const parent = dirname(directory);
-		if (parent === directory || directory === parse(directory).root) return undefined;
+		if (parent === directory) return undefined;
 		directory = parent;
 	}
 	return undefined;
@@ -130,7 +130,7 @@ async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile
 	const runtime = (ctx.modelRegistry as unknown as { runtime?: InternalRuntime }).runtime;
 	const store = runtime?.credentials?.store;
 	const create = store?.constructor?.create;
-	if (typeof create !== "function") {
+	if (!runtime || !store || typeof create !== "function") {
 		throw new Error("Auth profiles is incompatible with this version of pi: credential storage cannot be switched.");
 	}
 	runtime.credentials!.store = create.call(store.constructor, path);
@@ -169,7 +169,7 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 		data = parsed;
 	}
 	update(data);
-	mkdirSync(join(path, ".."), { recursive: true });
+	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, JSON.stringify(data, null, "\t") + "\n");
 }
 
