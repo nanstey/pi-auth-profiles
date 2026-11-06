@@ -134,12 +134,19 @@ function mainWorktreeRoot(cwd: string): string | undefined {
 	}
 }
 
-function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): { profile: string; source: string } {
+type ProfileBinding = {
+	profile: string;
+	source: string;
+	path: string;
+};
+
+function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ProfileBinding {
+	const resolve = (profile: string, source: string): ProfileBinding => ({ profile, source, path: authPathFor(profile) });
 	if (ctx.isProjectTrusted()) {
 		const trustedRoot = persistedTrustedRoot(ctx.cwd) ?? canonicalPath(ctx.cwd);
 		const project = findProjectProfile(ctx.cwd, trustedRoot);
 		if (project) {
-			return { profile: project.profile, source: `project: ${project.settingsPath}` };
+			return resolve(project.profile, `project: ${project.settingsPath}`);
 		}
 		// Linked worktrees outside the parent folder inherit from their main checkout.
 		// The main checkout needs its own persisted trust chain.
@@ -147,14 +154,14 @@ function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">)
 		const mainTrustedRoot = mainRoot && persistedTrustedRoot(mainRoot);
 		const inherited = mainRoot && mainTrustedRoot ? findProjectProfile(mainRoot, mainTrustedRoot) : undefined;
 		if (inherited) {
-			return { profile: inherited.profile, source: `main worktree: ${inherited.settingsPath}` };
+			return resolve(inherited.profile, `main worktree: ${inherited.settingsPath}`);
 		}
 	}
 	const global = readJsonFile(globalConfigPath())?.defaultProfile;
 	if (typeof global === "string" && global.trim()) {
-		return { profile: normalizeName(global), source: "global default" };
+		return resolve(normalizeName(global), "global default");
 	}
-	return { profile: DEFAULT_PROFILE, source: "built-in default" };
+	return resolve(DEFAULT_PROFILE, "built-in default");
 }
 
 type InternalAuthStorage = {
@@ -165,9 +172,8 @@ type InternalRuntime = {
 	credentials?: { store?: InternalAuthStorage };
 };
 
-/** Point the session's live credential store at the profile's file. */
-async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile: string): Promise<string> {
-	const path = authPathFor(profile);
+/** Point the session's live credential store at a previously selected profile file. */
+async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, path: string): Promise<void> {
 	// Pi no longer exposes its file-auth backend to extensions. Reuse the active
 	// store's factory so Pi retains its own locking, permissions, and reload logic.
 	const runtime = (ctx.modelRegistry as unknown as { runtime?: InternalRuntime }).runtime;
@@ -180,7 +186,6 @@ async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile
 
 	// Refresh Pi's provider-auth status after binding during session startup.
 	await ctx.modelRegistry.refresh({ allowNetwork: false });
-	return path;
 }
 
 function listProfiles(): string[] {
@@ -195,8 +200,8 @@ function listProfiles(): string[] {
 	return names;
 }
 
-function providersIn(profile: string): string[] {
-	return Object.keys(readJsonFile(authPathFor(profile)) ?? {});
+function providersIn(path: string): string[] {
+	return Object.keys(readJsonFile(path) ?? {});
 }
 
 function updateJsonFile(path: string, update: (data: Record<string, unknown>) => void): void {
@@ -215,23 +220,30 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 
 export default function (pi: ExtensionAPI) {
 	// A reloaded extension cannot inspect the runtime's retained credential binding.
-	let activeProfile: string | undefined;
-	let activeSource: string | undefined;
+	let startupBinding: ProfileBinding | undefined;
+	let activeBinding: ProfileBinding | undefined;
 
-	const bindAtSessionStart = async (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
-		const { profile, source } = resolveProfile(ctx);
-		await bindProfile(ctx, profile);
-		activeProfile = profile;
-		activeSource = source;
-		return { profile, source };
+	const bind = async (ctx: Pick<ExtensionContext, "modelRegistry">, binding: ProfileBinding) => {
+		activeBinding = undefined;
+		await bindProfile(ctx, binding.path);
+		activeBinding = binding;
 	};
 
 	pi.on("session_start", async (event, ctx) => {
-		// /reload starts extensions again but retains the running model runtime.
-		if (event.reason !== "startup") return;
-		const { profile, source } = await bindAtSessionStart(ctx);
-		if (profile !== DEFAULT_PROFILE) {
-			ctx.ui.notify(`Auth profile: ${profile} (${source})`, "info");
+		// /reload retains its runtime. A fresh runtime must reuse the profile and
+		// path selected at process startup instead of reading changed configuration.
+		if (event.reason === "reload") {
+			activeBinding = undefined;
+			return;
+		}
+		if (event.reason === "startup") {
+			startupBinding = resolveProfile(ctx);
+		}
+		if (!startupBinding) return;
+
+		await bind(ctx, startupBinding);
+		if (event.reason === "startup" && startupBinding.profile !== DEFAULT_PROFILE) {
+			ctx.ui.notify(`Auth profile: ${startupBinding.profile} (${startupBinding.source})`, "info");
 		}
 	});
 
@@ -254,7 +266,7 @@ export default function (pi: ExtensionAPI) {
 				switch (command ?? "show") {
 					case "show": {
 						const configured = resolveProfile(ctx);
-						if (activeProfile === undefined || activeSource === undefined) {
+						if (activeBinding === undefined) {
 							ctx.ui.notify(
 								"Active auth profile unavailable until Pi restarts.\n" +
 									`Configured after restart: ${configured.profile} (${configured.source})`,
@@ -262,14 +274,14 @@ export default function (pi: ExtensionAPI) {
 							);
 							return;
 						}
-						const providers = providersIn(activeProfile);
+						const providers = providersIn(activeBinding.path);
 						const configuredAfterRestart =
-							configured.profile === activeProfile
+							configured.profile === activeBinding.profile
 								? ""
 								: `\nConfigured after restart: ${configured.profile} (${configured.source})`;
 						ctx.ui.notify(
-							`Auth profile: ${activeProfile} (${activeSource})\n` +
-								`File: ${authPathFor(activeProfile)}\n` +
+							`Auth profile: ${activeBinding.profile} (${activeBinding.source})\n` +
+								`File: ${activeBinding.path}\n` +
 								`Providers: ${providers.length ? providers.join(", ") : "none — run /login"}` +
 								configuredAfterRestart,
 							"info",
@@ -278,8 +290,8 @@ export default function (pi: ExtensionAPI) {
 					}
 					case "list": {
 						const lines = listProfiles().map((name) => {
-							const marker = name === activeProfile ? "* " : "  ";
-							const providers = providersIn(name);
+							const marker = name === activeBinding?.profile ? "* " : "  ";
+							const providers = providersIn(authPathFor(name));
 							return `${marker}${name} (${providers.length ? providers.join(", ") : "no credentials"})`;
 						});
 						ctx.ui.notify(lines.join("\n"), "info");
