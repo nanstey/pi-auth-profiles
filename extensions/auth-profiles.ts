@@ -8,6 +8,8 @@
  * Profile selection (first match wins):
  *   1. "authProfile" in the nearest <cwd-or-trusted-ancestor>/.pi/settings.json
  *      (trusted sessions may use cwd; ancestors require unbroken persisted trust)
+ *      If none is found and cwd is a linked git worktree, the same lookup runs
+ *      from the main checkout (which needs its own persisted trust chain).
  *   2. "defaultProfile" in ~/.pi/agent/auth-profiles.json
  *   3. "default"
  *
@@ -27,8 +29,9 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const DEFAULT_PROFILE = "default";
 
@@ -109,12 +112,43 @@ function persistedTrustedRoot(cwd: string): string | undefined {
 	}
 }
 
+/**
+ * Main checkout of the repository that `cwd` belongs to, when `cwd` is a linked
+ * worktree living elsewhere (e.g. ~/orca/workspaces/<repo>/<branch>).
+ */
+function mainWorktreeRoot(cwd: string): string | undefined {
+	try {
+		const [toplevel, commonDir] = execFileSync(
+			"git",
+			["-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 },
+		)
+			.trim()
+			.split("\n");
+		if (!toplevel || !commonDir || basename(commonDir) !== ".git") return undefined;
+		const root = canonicalPath(dirname(commonDir));
+		// Only a linked worktree qualifies; a subdirectory of the main checkout
+		// must not skip the persisted-trust walk that stopped at cwd.
+		return root === canonicalPath(toplevel) ? undefined : root;
+	} catch {
+		return undefined;
+	}
+}
+
 function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): { profile: string; source: string } {
 	if (ctx.isProjectTrusted()) {
 		const trustedRoot = persistedTrustedRoot(ctx.cwd) ?? canonicalPath(ctx.cwd);
 		const project = findProjectProfile(ctx.cwd, trustedRoot);
 		if (project) {
 			return { profile: project.profile, source: `project: ${project.settingsPath}` };
+		}
+		// Linked worktrees outside the parent folder inherit from their main checkout.
+		// The main checkout needs its own persisted trust chain.
+		const mainRoot = mainWorktreeRoot(ctx.cwd);
+		const mainTrustedRoot = mainRoot && persistedTrustedRoot(mainRoot);
+		const inherited = mainRoot && mainTrustedRoot ? findProjectProfile(mainRoot, mainTrustedRoot) : undefined;
+		if (inherited) {
+			return { profile: inherited.profile, source: `main worktree: ${inherited.settingsPath}` };
 		}
 	}
 	const global = readJsonFile(globalConfigPath())?.defaultProfile;

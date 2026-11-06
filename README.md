@@ -75,6 +75,10 @@ This supports account-based repository roots without repeating the setting in ev
 - `"authProfile": "default"` is explicit: it selects plain `auth.json` and ignores `defaultProfile`.
 - With no setting in the tree, `defaultProfile` applies, then `default`.
 
+### Linked worktrees
+
+A linked worktree outside the parent folder (for example Orca's `~/orca/workspaces/<repo>/<branch>`) never walks through the parent. When cwd has no setting, the extension finds the main checkout with `git rev-parse --git-common-dir` and runs the same lookup from there. So `~/code/work/api` and every worktree of it share the `work` profile. The main checkout must be covered by persisted trust.
+
 ### Trust
 
 - Trusted sessions always read `cwd/.pi/settings.json`, however trust was granted (`--approve`, `defaultProjectTrust`, session-only grant).
