@@ -1,7 +1,7 @@
 # Preserve auth storage identity
 
 - Status: testing
-- Summary: Keep Pi's live credential facade bound to the selected auth profile after `/profile use`.
+- Summary: Bind Pi's credential facade to the configured auth profile at session startup; profile changes require a restart.
 
 ## Design
 | Stage | Doc | Status |
@@ -16,5 +16,5 @@
 ## Decision log
 
 - 2026-11-06 — `@gotgenes/pi-anthropic-auth` does not mutate credential storage. Fix the auth-profiles rebind path only.
-- 2026-11-06 — Rebind only after `ctx.waitForIdle()`, preserving Pi's `RuntimeCredentials` facade while replacing its backing file store.
-- 2026-11-06 — Refresh `ctx.modelRegistry` after rebinding so `/login` reflects the selected profile's credentials.
+- 2026-11-06 — Do not rebind a running session. Pi cache warming can retain credential references after `ctx.waitForIdle()` resolves, so profile changes take effect only after restart.
+- 2026-11-06 — Bind and refresh `ctx.modelRegistry` only at `session_start` after resolving the configured profile.

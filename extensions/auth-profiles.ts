@@ -16,9 +16,8 @@
  * This lets a directory such as ~/Code/noelcf/.pi/settings.json select a
  * profile for every repository below ~/Code/noelcf without duplicating it.
  *
- * The extension rebinds the live AuthStorage backend at session_start and on
- * /profile changes, so the built-in /login, /logout, and OAuth token refresh
- * all read and write the active profile's file — no restart required.
+ * The extension binds the AuthStorage backend at session_start. Profile commands
+ * only persist configuration; restart Pi before the selected profile becomes active.
  *
  * Commands:
  *   /profile                 show the active profile
@@ -27,7 +26,7 @@
  *   /profile default <name>  set the global fallback profile
  *   /profile clear           remove this project's profile setting
  */
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -179,8 +178,7 @@ async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile
 	}
 	runtime.credentials!.store = create.call(store.constructor, path);
 
-	// Switching after startup otherwise leaves Pi's cached provider-auth status
-	// based on the previously selected profile.
+	// Refresh Pi's provider-auth status after binding during session startup.
 	await ctx.modelRegistry.refresh({ allowNetwork: false });
 	return path;
 }
@@ -217,22 +215,18 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 
 export default function (pi: ExtensionAPI) {
 	let activeProfile = DEFAULT_PROFILE;
+	let activeSource = "built-in default";
 
-	const rebind = async (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
+	const bindAtSessionStart = async (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
 		const { profile, source } = resolveProfile(ctx);
-		const path = await bindProfile(ctx, profile);
+		await bindProfile(ctx, profile);
 		activeProfile = profile;
-		return { profile, source, path };
-	};
-
-	const updateAndRebindWhenIdle = async (ctx: ExtensionCommandContext, update: () => void) => {
-		await ctx.waitForIdle();
-		update();
-		return rebind(ctx);
+		activeSource = source;
+		return { profile, source };
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		const { profile, source } = await rebind(ctx);
+		const { profile, source } = await bindAtSessionStart(ctx);
 		if (profile !== DEFAULT_PROFILE) {
 			ctx.ui.notify(`Auth profile: ${profile} (${source})`, "info");
 		}
@@ -256,12 +250,17 @@ export default function (pi: ExtensionAPI) {
 			try {
 				switch (command ?? "show") {
 					case "show": {
-						const { profile, source } = resolveProfile(ctx);
-						const providers = providersIn(profile);
+						const configured = resolveProfile(ctx);
+						const providers = providersIn(activeProfile);
+						const configuredAfterRestart =
+							configured.profile === activeProfile
+								? ""
+								: `\nConfigured after restart: ${configured.profile} (${configured.source})`;
 						ctx.ui.notify(
-							`Auth profile: ${profile} (${source})\n` +
-								`File: ${authPathFor(profile)}\n` +
-								`Providers: ${providers.length ? providers.join(", ") : "none — run /login"}`,
+							`Auth profile: ${activeProfile} (${activeSource})\n` +
+								`File: ${authPathFor(activeProfile)}\n` +
+								`Providers: ${providers.length ? providers.join(", ") : "none — run /login"}` +
+								configuredAfterRestart,
 							"info",
 						);
 						return;
@@ -282,14 +281,13 @@ export default function (pi: ExtensionAPI) {
 							ctx.ui.notify("Project is not trusted; cannot set a project auth profile here.", "error");
 							return;
 						}
-						const { path } = await updateAndRebindWhenIdle(ctx, () => {
-							updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
-								settings.authProfile = profile;
-							});
+						const settingsPath = projectSettingsPath(ctx.cwd);
+						updateJsonFile(settingsPath, (settings) => {
+							settings.authProfile = profile;
 						});
 						ctx.ui.notify(
-							`Project auth profile set to ${profile}. Settings: ${projectSettingsPath(ctx.cwd)}\n` +
-								`/login now saves to ${path}`,
+							`Project auth profile set to ${profile}. Settings: ${settingsPath}\n` +
+								"Restart Pi before this profile becomes active.",
 							"info",
 						);
 						return;
@@ -297,12 +295,14 @@ export default function (pi: ExtensionAPI) {
 					case "default": {
 						if (!rawName) return ctx.ui.notify(usage, "warning");
 						const profile = normalizeName(rawName);
-						const { profile: active, source } = await updateAndRebindWhenIdle(ctx, () => {
-							updateJsonFile(globalConfigPath(), (config) => {
-								config.defaultProfile = profile;
-							});
+						updateJsonFile(globalConfigPath(), (config) => {
+							config.defaultProfile = profile;
 						});
-						ctx.ui.notify(`Global default auth profile set to ${profile}. Active profile: ${active} (${source})`, "info");
+						ctx.ui.notify(
+							`Global default auth profile set to ${profile}.\n` +
+								"Restart Pi before this setting can affect the active profile.",
+							"info",
+						);
 						return;
 					}
 					case "clear": {
@@ -311,14 +311,15 @@ export default function (pi: ExtensionAPI) {
 							return;
 						}
 						const path = projectSettingsPath(ctx.cwd);
-						const { profile, source } = await updateAndRebindWhenIdle(ctx, () => {
-							if (existsSync(path)) {
-								updateJsonFile(path, (settings) => {
-									delete settings.authProfile;
-								});
-							}
-						});
-						ctx.ui.notify(`Project auth profile cleared. Active profile: ${profile} (${source})`, "info");
+						if (existsSync(path)) {
+							updateJsonFile(path, (settings) => {
+								delete settings.authProfile;
+							});
+						}
+						ctx.ui.notify(
+							"Project auth profile cleared. Restart Pi before the configured profile changes the active profile.",
+							"info",
+						);
 						return;
 					}
 					default:

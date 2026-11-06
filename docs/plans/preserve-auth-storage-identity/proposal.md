@@ -2,35 +2,38 @@
 
 ## Purpose
 
-After `/profile use work`, Pi login and OAuth refresh must write credentials to `auth-profiles/work.json`, including paths that captured the credential store before extension lifecycle hooks ran.
+Pi must bind its credential storage to the configured profile when a session starts without ever changing that binding during a running session.
 
 ## Scope
 
-- Preserve Pi's existing `RuntimeCredentials` facade while rebinding its backing store to the selected profile.
-- Refresh the public model registry so built-in `/login` reflects the selected profile immediately.
-- Exclude changes to `@gotgenes/pi-anthropic-auth`; source review confirms it does not mutate credential storage.
+- Bind Pi's existing `RuntimeCredentials` facade to the resolved profile at `session_start`.
+- Make `/profile use`, `/profile default`, and `/profile clear` persist configuration only and tell the user to restart Pi.
+- Exclude changes to `@gotgenes/pi-anthropic-auth`; this change is limited to the local auth-profiles extension and does not rely on a review of that external package's source.
 
 ## Behaviour
 
-- Given a trusted project and `/profile use work`, when a previously captured credential store writes an Anthropic OAuth credential, then the credential is written to `~/.pi/agent/auth-profiles/work.json`.
-- Given the same flow, then `~/.pi/agent/auth.json` does not receive that credential.
-- Existing profile selection and availability refresh behavior remain unchanged.
+- Given a trusted project and `/profile use work`, the command writes `authProfile: "work"` to that project's `.pi/settings.json` and tells the user to restart Pi.
+- Given `/profile default work`, the command writes `defaultProfile: "work"` to `~/.pi/agent/auth-profiles.json` and tells the user to restart Pi.
+- Given a trusted project and `/profile clear`, the command removes that project's profile setting and tells the user to restart Pi.
+- The active credential binding does not change during the current session. After restart, `session_start` resolves the configuration and binds login, logout, and OAuth refresh to the selected profile file.
+- Existing input validation and trust gates remain unchanged.
 
 ## Implementation
 
-`RuntimeCredentials` is the stable facade Pi gives to login, logout, and OAuth flows. Its mutable backing store is replaced only after `ctx.waitForIdle()` completes. This keeps existing credential-facade references on the selected profile.
+`RuntimeCredentials` is the stable facade Pi gives to login, logout, and OAuth flows. Its mutable backing store is replaced once at `session_start`, after profile resolution and trust checks. Pi's provider-auth status is refreshed at that time.
 
-After rebinding, call the public `ctx.modelRegistry.refresh({ allowNetwork: false })`. It rebuilds Pi's cached provider-auth snapshot from the selected store without a network model-catalog refresh, so `/login` does not display credentials from the previous profile.
+Command handlers only update their respective JSON settings file. They do not wait for idle, rebind the credential store, or refresh the model registry. Pi cache warming can retain credential references after `ctx.waitForIdle()` resolves, so live rebinding cannot preserve credential-profile isolation.
 
 ## Validation
 
 In an isolated Pi agent directory:
 
-1. Log in to Anthropic under `default`.
-2. Run `/profile use work`.
-3. Confirm `/login` shows Anthropic unconfigured and log in.
-4. Switch between `default` and `work` and confirm each profile shows only its own credential state.
+1. Start Pi in a project configured for `default` and log in to Anthropic.
+2. Run `/profile use work` and confirm the command reports that a restart is required.
+3. Before restarting, confirm `/login` still uses the `default` profile.
+4. Restart Pi, confirm `work` is active, then log in and confirm the credential is written to `~/.pi/agent/auth-profiles/work.json`.
+5. Repeat with `/profile default` and `/profile clear` to confirm each changes only after restart.
 
 ## Risks
 
-The profile extension still depends on Pi's internal `modelRegistry.runtime.credentials.store` shape to change the file-backed store. The model-registry refresh is public, but a future Pi runtime change can make the private rebind incompatible; the extension reports that incompatibility instead of silently using the wrong file.
+The profile extension still depends on Pi's internal `modelRegistry.runtime.credentials.store` shape to change the file-backed store at session startup. A future Pi runtime change can make the private binding incompatible; the extension reports that incompatibility instead of silently using the wrong file.
