@@ -16,12 +16,13 @@ pi install npm:@nanstey/pi-auth-profiles
 ```
 /profile                 show the active profile, its file, and providers
 /profile list            list all profiles and their providers
-/profile use <name>      set this project's profile (writes .pi/settings.json)
-/profile default <name>  set the global fallback profile
-/profile clear           remove this project's profile setting
+/profile set <name>      set this project's profile for the next Pi process
+/profile use <name>      deprecated alias for `set`
+/profile default <name>  set the global fallback profile for the next Pi process
+/profile clear           remove this project's profile setting for the next Pi process
 ```
 
-`/profile use` and `/profile clear` require the current project to be trusted.
+`/profile set`, `/profile use`, and `/profile clear` require the current project to be trusted.
 
 Typical setup:
 
@@ -33,7 +34,8 @@ pi
 
 Configure auth profile:
 ```
-/profile use work        # this repo now uses the "work" profile
+/profile set work        # configure the "work" profile
+# exit Pi and start a new process
 /login                   # credentials are saved to the work profile
 ```
 
@@ -46,7 +48,7 @@ Each profile is a separate credential file:
 | `default` | `~/.pi/agent/auth.json`               |
 | `<name>`  | `~/.pi/agent/auth-profiles/<name>.json` |
 
-The active profile is resolved per session, first match wins:
+The active profile is resolved at full Pi process startup, then reused for fresh sessions in that process. The first match wins:
 
 1. `"authProfile"` in the nearest eligible `.pi/settings.json` at or above the working directory — trusted sessions always consider cwd; ancestors require an unbroken persisted-trust chain
 2. `"defaultProfile"` in `~/.pi/agent/auth-profiles.json`
@@ -85,9 +87,9 @@ A linked worktree outside the parent folder (for example Orca's `~/orca/workspac
 - Ancestor settings apply only across an unbroken chain of persisted `true` decisions in `~/.pi/agent/trust.json`. The search stops at the first missing or `false` decision.
 - Pi loads project resources only from the current directory's `.pi`. This extension also walks parent directories, only to select the auth profile.
 
-### Rebinding
+### Session startup
 
-Credential storage is rebound at `session_start` (after trust is resolved) and on `/profile use`. `/login`, `/logout`, and OAuth refresh then use the active profile's file immediately.
+Credential storage resolves its profile and file path only during a full Pi process startup, after trust is resolved. Fresh runtimes from `/new`, `/resume`, and `/fork` reuse that original binding without reading changed configuration. `/profile set`, `/profile default`, and `/profile clear` only save configuration, so exit Pi and start a new process before `/login`, `/logout`, and OAuth refresh use the changed profile. `/profile use` remains a deprecated alias for `/profile set`. `/reload` retains its runtime and does not activate profile changes; `/profile show` continues to report the process-start binding and any configuration that will apply after restart.
 
 `.pi/settings.json` is committable, so a team repo can pin a profile name without sharing credentials. For personal use in a shared repo, you should prefer using the parent folder method.
 
@@ -98,6 +100,7 @@ Credential storage is rebound at `session_start` (after trust is resolved) and o
   when providers rotate refresh tokens. Environment variables
   (`ANTHROPIC_API_KEY`, …) and `models.json` keys apply in every profile.
 - Profile names may contain letters, numbers, dots, underscores, and dashes.
+- Pi chooses its initial model before extensions receive `session_start`. If `auth.json` and the selected profile differ, explicitly select the model after startup. Automatic initial-model profile authentication requires upstream lifecycle support.
 
 ## License
 

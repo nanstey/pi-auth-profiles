@@ -16,14 +16,14 @@
  * This lets a directory such as ~/Code/noelcf/.pi/settings.json select a
  * profile for every repository below ~/Code/noelcf without duplicating it.
  *
- * The extension rebinds the live AuthStorage backend at session_start and on
- * /profile changes, so the built-in /login, /logout, and OAuth token refresh
- * all read and write the active profile's file — no restart required.
+ * The extension binds the AuthStorage backend only during a full Pi process startup.
+ * Profile commands only persist configuration; /reload does not activate profile changes.
  *
  * Commands:
  *   /profile                 show the active profile
  *   /profile list            list profiles and their providers
- *   /profile use <name>      set this project's profile (writes .pi/settings.json)
+ *   /profile set <name>      set this project's profile (writes .pi/settings.json)
+ *   /profile use <name>      deprecated alias for set
  *   /profile default <name>  set the global fallback profile
  *   /profile clear           remove this project's profile setting
  */
@@ -135,12 +135,33 @@ function mainWorktreeRoot(cwd: string): string | undefined {
 	}
 }
 
-function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): { profile: string; source: string } {
+type ProfileBinding = {
+	profile: string;
+	source: string;
+	path: string;
+};
+
+type ProcessProfileState = {
+	startupBinding?: ProfileBinding;
+	activeBinding?: ProfileBinding;
+};
+
+// Pi evaluates extension modules again on /reload. A process-global symbol keeps
+// the process-start selection across those evaluations, but vanishes on exit.
+const processProfileStateKey = Symbol.for("@nanstey/pi-auth-profiles/process-profile-state");
+
+function processProfileState(): ProcessProfileState {
+	const stateHost = globalThis as typeof globalThis & { [key: symbol]: ProcessProfileState | undefined };
+	return (stateHost[processProfileStateKey] ??= {});
+}
+
+function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ProfileBinding {
+	const resolve = (profile: string, source: string): ProfileBinding => ({ profile, source, path: authPathFor(profile) });
 	if (ctx.isProjectTrusted()) {
 		const trustedRoot = persistedTrustedRoot(ctx.cwd) ?? canonicalPath(ctx.cwd);
 		const project = findProjectProfile(ctx.cwd, trustedRoot);
 		if (project) {
-			return { profile: project.profile, source: `project: ${project.settingsPath}` };
+			return resolve(project.profile, `project: ${project.settingsPath}`);
 		}
 		// Linked worktrees outside the parent folder inherit from their main checkout.
 		// The main checkout needs its own persisted trust chain.
@@ -148,14 +169,14 @@ function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">)
 		const mainTrustedRoot = mainRoot && persistedTrustedRoot(mainRoot);
 		const inherited = mainRoot && mainTrustedRoot ? findProjectProfile(mainRoot, mainTrustedRoot) : undefined;
 		if (inherited) {
-			return { profile: inherited.profile, source: `main worktree: ${inherited.settingsPath}` };
+			return resolve(inherited.profile, `main worktree: ${inherited.settingsPath}`);
 		}
 	}
 	const global = readJsonFile(globalConfigPath())?.defaultProfile;
 	if (typeof global === "string" && global.trim()) {
-		return { profile: normalizeName(global), source: "global default" };
+		return resolve(normalizeName(global), "global default");
 	}
-	return { profile: DEFAULT_PROFILE, source: "built-in default" };
+	return resolve(DEFAULT_PROFILE, "built-in default");
 }
 
 type InternalAuthStorage = {
@@ -164,12 +185,10 @@ type InternalAuthStorage = {
 
 type InternalRuntime = {
 	credentials?: { store?: InternalAuthStorage };
-	forceRefreshAvailability?: () => Promise<unknown>;
 };
 
-/** Point the session's live credential store at the profile's file. */
-async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile: string): Promise<string> {
-	const path = authPathFor(profile);
+/** Point the session's live credential store at a previously selected profile file. */
+async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, path: string): Promise<void> {
 	// Pi no longer exposes its file-auth backend to extensions. Reuse the active
 	// store's factory so Pi retains its own locking, permissions, and reload logic.
 	const runtime = (ctx.modelRegistry as unknown as { runtime?: InternalRuntime }).runtime;
@@ -180,12 +199,8 @@ async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile
 	}
 	runtime.credentials!.store = create.call(store.constructor, path);
 
-	// Switching after startup otherwise leaves the model availability snapshot
-	// based on the previously selected profile.
-	if (typeof runtime.forceRefreshAvailability === "function") {
-		await runtime.forceRefreshAvailability();
-	}
-	return path;
+	// Refresh Pi's provider-auth status after binding during session startup.
+	await ctx.modelRegistry.refresh({ allowNetwork: false });
 }
 
 function listProfiles(): string[] {
@@ -200,8 +215,8 @@ function listProfiles(): string[] {
 	return names;
 }
 
-function providersIn(profile: string): string[] {
-	return Object.keys(readJsonFile(authPathFor(profile)) ?? {});
+function providersIn(path: string): string[] {
+	return Object.keys(readJsonFile(path) ?? {});
 }
 
 function updateJsonFile(path: string, update: (data: Record<string, unknown>) => void): void {
@@ -219,59 +234,89 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 }
 
 export default function (pi: ExtensionAPI) {
-	let activeProfile = DEFAULT_PROFILE;
-
-	const rebind = async (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
-		const { profile, source } = resolveProfile(ctx);
-		const path = await bindProfile(ctx, profile);
-		activeProfile = profile;
-		return { profile, source, path };
+	const state = processProfileState();
+	const bind = async (ctx: Pick<ExtensionContext, "modelRegistry">, binding: ProfileBinding) => {
+		state.activeBinding = undefined;
+		await bindProfile(ctx, binding.path);
+		state.activeBinding = binding;
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
-		const { profile, source } = await rebind(ctx);
-		if (profile !== DEFAULT_PROFILE) {
-			ctx.ui.notify(`Auth profile: ${profile} (${source})`, "info");
+	pi.on("session_start", async (event, ctx) => {
+		// /reload retains its runtime. Fresh runtimes reuse the profile and path
+		// selected at process startup instead of reading changed configuration.
+		if (event.reason === "reload") return;
+		if (event.reason === "startup") {
+			state.startupBinding = resolveProfile(ctx);
+		} else if (!(["new", "resume", "fork"] as const).includes(event.reason)) {
+			return;
+		}
+		if (!state.startupBinding) {
+			// Defensive only: Pi normally emits startup before any fresh runtime.
+			state.activeBinding = undefined;
+			return;
+		}
+
+		await bind(ctx, state.startupBinding);
+		if (event.reason === "startup" && state.startupBinding.profile !== DEFAULT_PROFILE) {
+			ctx.ui.notify(`Auth profile: ${state.startupBinding.profile} (${state.startupBinding.source})`, "info");
 		}
 	});
 
 	pi.registerCommand("profile", {
-		description: "Manage auth profiles: show | list | use <name> | default <name> | clear",
+		description: "Manage auth profiles: show | list | set <name> | default <name> | clear (use is deprecated)",
 		getArgumentCompletions: (prefix) => {
 			const words = prefix.split(/\s+/);
 			const items =
 				words.length <= 1
-					? ["show", "list", "use", "default", "clear"]
-					: ["use", "default"].includes(words[0])
+					? ["show", "list", "set", "use", "default", "clear"]
+					: ["set", "use", "default"].includes(words[0])
 						? listProfiles().map((name) => `${words[0]} ${name}`)
 						: [];
-			return items.filter((item) => item.startsWith(prefix)).map((value) => ({ value, label: value }));
+			return items
+				.filter((item) => item.startsWith(prefix))
+				.map((value) => ({ value, label: value === "use" ? "use (deprecated; use set)" : value }));
 		},
 		handler: async (args, ctx) => {
 			const [command, rawName] = args.trim().split(/\s+/).filter(Boolean);
-			const usage = "Usage: /profile [show|list|use <name>|default <name>|clear]";
+			const usage =
+				"Usage: /profile [show|list|set <name>|default <name>|clear]\n" +
+				"/profile use <name> is deprecated; use /profile set <name>.";
 			try {
 				switch (command ?? "show") {
 					case "show": {
-						const { profile, source } = resolveProfile(ctx);
-						const providers = providersIn(profile);
+						const configured = resolveProfile(ctx);
+						if (state.activeBinding === undefined) {
+							ctx.ui.notify(
+								"Active auth profile unavailable until Pi restarts.\n" +
+									`Configured after restart: ${configured.profile} (${configured.source})`,
+								"info",
+							);
+							return;
+						}
+						const providers = providersIn(state.activeBinding.path);
+						const configuredAfterRestart =
+							configured.profile === state.activeBinding.profile
+								? ""
+								: `\nConfigured after restart: ${configured.profile} (${configured.source})`;
 						ctx.ui.notify(
-							`Auth profile: ${profile} (${source})\n` +
-								`File: ${authPathFor(profile)}\n` +
-								`Providers: ${providers.length ? providers.join(", ") : "none — run /login"}`,
+							`Auth profile: ${state.activeBinding.profile} (${state.activeBinding.source})\n` +
+								`File: ${state.activeBinding.path}\n` +
+								`Providers: ${providers.length ? providers.join(", ") : "none — run /login"}` +
+								configuredAfterRestart,
 							"info",
 						);
 						return;
 					}
 					case "list": {
 						const lines = listProfiles().map((name) => {
-							const marker = name === activeProfile ? "* " : "  ";
-							const providers = providersIn(name);
+							const marker = name === state.activeBinding?.profile ? "* " : "  ";
+							const providers = providersIn(authPathFor(name));
 							return `${marker}${name} (${providers.length ? providers.join(", ") : "no credentials"})`;
 						});
 						ctx.ui.notify(lines.join("\n"), "info");
 						return;
 					}
+					case "set":
 					case "use": {
 						if (!rawName) return ctx.ui.notify(usage, "warning");
 						const profile = normalizeName(rawName);
@@ -279,13 +324,16 @@ export default function (pi: ExtensionAPI) {
 							ctx.ui.notify("Project is not trusted; cannot set a project auth profile here.", "error");
 							return;
 						}
-						updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
+						const settingsPath = projectSettingsPath(ctx.cwd);
+						updateJsonFile(settingsPath, (settings) => {
 							settings.authProfile = profile;
 						});
-						const { path } = await rebind(ctx);
+						const deprecation =
+							command === "use" ? "Deprecated: /profile use is deprecated; use /profile set <name>.\n" : "";
 						ctx.ui.notify(
-							`Project auth profile set to ${profile}. Settings: ${projectSettingsPath(ctx.cwd)}\n` +
-								`/login now saves to ${path}`,
+							deprecation +
+								`Project auth profile set to ${profile}. Settings: ${settingsPath}\n` +
+								"Restart the Pi process before this profile becomes active. /reload does not activate profile changes.",
 							"info",
 						);
 						return;
@@ -296,8 +344,11 @@ export default function (pi: ExtensionAPI) {
 						updateJsonFile(globalConfigPath(), (config) => {
 							config.defaultProfile = profile;
 						});
-						const { profile: active, source } = await rebind(ctx);
-						ctx.ui.notify(`Global default auth profile set to ${profile}. Active profile: ${active} (${source})`, "info");
+						ctx.ui.notify(
+							`Global default auth profile set to ${profile}.\n` +
+								"Restart the Pi process before this setting can affect the active profile. /reload does not activate profile changes.",
+							"info",
+						);
 						return;
 					}
 					case "clear": {
@@ -311,8 +362,10 @@ export default function (pi: ExtensionAPI) {
 								delete settings.authProfile;
 							});
 						}
-						const { profile, source } = await rebind(ctx);
-						ctx.ui.notify(`Project auth profile cleared. Active profile: ${profile} (${source})`, "info");
+						ctx.ui.notify(
+							"Project auth profile cleared. Restart the Pi process before the configured profile changes the active profile. /reload does not activate profile changes.",
+							"info",
+						);
 						return;
 					}
 					default:
