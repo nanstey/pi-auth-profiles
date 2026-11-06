@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,10 @@ let reloadEvaluation = 0;
 type SessionReason = "startup" | "reload" | "new" | "resume" | "fork";
 type Handler = (event: { reason: SessionReason }, ctx: ReturnType<typeof createContext>) => Promise<void>;
 type CommandHandler = (args: string, ctx: ReturnType<typeof createContext>) => Promise<void>;
+type ProfileCommand = {
+	handler: CommandHandler;
+	getArgumentCompletions: (prefix: string) => Array<{ value: string; label: string }>;
+};
 
 class Store {
 	constructor(readonly path?: string) {}
@@ -33,16 +37,22 @@ class Store {
 function createApi(extension = installExtension) {
 	let sessionStart: Handler | undefined;
 	let profile: CommandHandler | undefined;
+	let profileCommand: ProfileCommand | undefined;
 	extension({
 		on(event: string, handler: Handler) {
 			if (event === "session_start") sessionStart = handler;
 		},
-		registerCommand(name: string, command: { handler: CommandHandler }) {
-			if (name === "profile") profile = command.handler;
+		registerCommand(name: string, command: ProfileCommand) {
+			if (name === "profile") {
+				profile = command.handler;
+				profileCommand = command;
+			}
 		},
 	} as never);
-	if (!sessionStart || !profile) throw new Error("Extension did not register its session handler and profile command.");
-	return { sessionStart, profile };
+	if (!sessionStart || !profile || !profileCommand) {
+		throw new Error("Extension did not register its session handler and profile command.");
+	}
+	return { sessionStart, profile, profileCommand };
 }
 
 async function createReloadedApi() {
@@ -50,13 +60,13 @@ async function createReloadedApi() {
 	return createApi(reloadedExtension);
 }
 
-function createContext() {
+function createContext(trusted = false) {
 	const notifications: string[] = [];
 	const refreshes: string[] = [];
 	const credentials = { store: new Store("unbound") };
 	return {
 		cwd: join(agentDir, "project"),
-		isProjectTrusted: () => false,
+		isProjectTrusted: () => trusted,
 		modelRegistry: {
 			runtime: { credentials },
 			refresh: async () => {
@@ -108,4 +118,31 @@ test("preserves the process-start profile across recreated factories and module 
 		expect(profile).toContain("Configured after restart: changed (global default)");
 		expect(profile).not.toContain("unavailable");
 	}
+});
+
+test("uses set as the canonical project-profile command and retains use as a deprecated alias", async () => {
+	agentDir = mkdtempSync(join(tmpdir(), "pi-auth-profiles-"));
+	const { profile, profileCommand } = createApi();
+	const context = createContext(true);
+	const settingsPath = join(context.cwd, ".pi", "settings.json");
+
+	const completions = profileCommand.getArgumentCompletions("");
+	expect(completions).toContainEqual({ value: "set", label: "set" });
+	expect(completions).toContainEqual({ value: "use", label: "use (deprecated; use set)" });
+	expect(profileCommand.getArgumentCompletions("set ")).toContainEqual({ value: "set default", label: "set default" });
+
+	await profile("set work", context);
+	expect(readFileSync(settingsPath, "utf8")).toBe('{\n\t"authProfile": "work"\n}\n');
+	expect(context.notifications.at(-1)).toContain("Project auth profile set to work.");
+	expect(context.notifications.at(-1)).toContain("Restart the Pi process");
+	expect(context.notifications.at(-1)).not.toContain("Deprecated:");
+
+	await profile("use personal", context);
+	expect(readFileSync(settingsPath, "utf8")).toBe('{\n\t"authProfile": "personal"\n}\n');
+	expect(context.notifications.at(-1)).toContain("Deprecated: /profile use is deprecated; use /profile set <name>.");
+
+	const untrusted = createContext(false);
+	await profile("set denied", untrusted);
+	expect(readFileSync(settingsPath, "utf8")).toBe('{\n\t"authProfile": "personal"\n}\n');
+	expect(untrusted.notifications.at(-1)).toBe("Project is not trusted; cannot set a project auth profile here.");
 });

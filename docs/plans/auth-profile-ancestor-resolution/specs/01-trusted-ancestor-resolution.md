@@ -5,7 +5,7 @@
 - [x] In trusted sessions, select the nearest eligible `.pi/settings.json` with a non-empty `authProfile`, always including cwd.
 - [x] Walk above cwd only through an unbroken persisted `true` trust chain; stop at the first missing or `false` decision.
 - [x] Include the selected settings path in the project profile source shown by `/profile`.
-- [x] Keep `/profile use` and `/profile clear` scoped to `cwd/.pi/settings.json`.
+- [x] Keep `/profile set` and `/profile clear` scoped to `cwd/.pi/settings.json`; retain `/profile use` as a deprecated alias for `/profile set`.
 - [x] Update the extension header and README with the actual lookup and trust rule.
 
 ## Test Scenarios

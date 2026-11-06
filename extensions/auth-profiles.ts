@@ -22,7 +22,8 @@
  * Commands:
  *   /profile                 show the active profile
  *   /profile list            list profiles and their providers
- *   /profile use <name>      set this project's profile (writes .pi/settings.json)
+ *   /profile set <name>      set this project's profile (writes .pi/settings.json)
+ *   /profile use <name>      deprecated alias for set
  *   /profile default <name>  set the global fallback profile
  *   /profile clear           remove this project's profile setting
  */
@@ -262,20 +263,24 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("profile", {
-		description: "Manage auth profiles: show | list | use <name> | default <name> | clear",
+		description: "Manage auth profiles: show | list | set <name> | default <name> | clear (use is deprecated)",
 		getArgumentCompletions: (prefix) => {
 			const words = prefix.split(/\s+/);
 			const items =
 				words.length <= 1
-					? ["show", "list", "use", "default", "clear"]
-					: ["use", "default"].includes(words[0])
+					? ["show", "list", "set", "use", "default", "clear"]
+					: ["set", "use", "default"].includes(words[0])
 						? listProfiles().map((name) => `${words[0]} ${name}`)
 						: [];
-			return items.filter((item) => item.startsWith(prefix)).map((value) => ({ value, label: value }));
+			return items
+				.filter((item) => item.startsWith(prefix))
+				.map((value) => ({ value, label: value === "use" ? "use (deprecated; use set)" : value }));
 		},
 		handler: async (args, ctx) => {
 			const [command, rawName] = args.trim().split(/\s+/).filter(Boolean);
-			const usage = "Usage: /profile [show|list|use <name>|default <name>|clear]";
+			const usage =
+				"Usage: /profile [show|list|set <name>|default <name>|clear]\n" +
+				"/profile use <name> is deprecated; use /profile set <name>.";
 			try {
 				switch (command ?? "show") {
 					case "show": {
@@ -311,6 +316,7 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(lines.join("\n"), "info");
 						return;
 					}
+					case "set":
 					case "use": {
 						if (!rawName) return ctx.ui.notify(usage, "warning");
 						const profile = normalizeName(rawName);
@@ -322,8 +328,11 @@ export default function (pi: ExtensionAPI) {
 						updateJsonFile(settingsPath, (settings) => {
 							settings.authProfile = profile;
 						});
+						const deprecation =
+							command === "use" ? "Deprecated: /profile use is deprecated; use /profile set <name>.\n" : "";
 						ctx.ui.notify(
-							`Project auth profile set to ${profile}. Settings: ${settingsPath}\n` +
+							deprecation +
+								`Project auth profile set to ${profile}. Settings: ${settingsPath}\n` +
 								"Restart the Pi process before this profile becomes active. /reload does not activate profile changes.",
 							"info",
 						);

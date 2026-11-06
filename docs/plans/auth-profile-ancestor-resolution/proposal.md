@@ -9,7 +9,7 @@ A shared account folder such as `~/Code/noelcf` can select an auth profile for a
 - Given `~/Code/noelcf/.pi/settings.json` selects `work` and a session runs in `~/Code/noelcf/expedition-2`, the active profile is `work` when the session and the settings directory are trusted.
 - Given both an ancestor and cwd settings file select profiles, the cwd profile wins.
 - Given a candidate settings directory is untrusted, its profile is ignored and normal global/default resolution continues.
-- Given `/profile show`, it identifies the settings file supplying the profile. `/profile use` and `/profile clear` continue to write only `cwd/.pi/settings.json`.
+- Given `/profile show`, it identifies the settings file supplying the profile. `/profile set` and `/profile clear` continue to write only `cwd/.pi/settings.json`. `/profile use` remains a deprecated alias for `/profile set`.
 
 ## Behaviour
 

@@ -7,12 +7,12 @@ Pi must bind its credential storage to the configured profile when a session sta
 ## Scope
 
 - Resolve Pi's existing `RuntimeCredentials` profile and file path only for `session_start` with reason `startup`, then bind that captured path for every fresh runtime session start.
-- Make `/profile use`, `/profile default`, and `/profile clear` persist configuration only and tell the user to exit Pi and start a new process. `/reload` does not activate profile changes.
+- Make `/profile set`, `/profile default`, and `/profile clear` persist configuration only and tell the user to exit Pi and start a new process. `/profile use` remains a deprecated alias for `/profile set`. `/reload` does not activate profile changes.
 - Exclude changes to `@gotgenes/pi-anthropic-auth`; this change is limited to the local auth-profiles extension and does not rely on a review of that external package's source.
 
 ## Behaviour
 
-- Given a trusted project and `/profile use work`, the command writes `authProfile: "work"` to that project's `.pi/settings.json` and tells the user to exit Pi and start a new process.
+- Given a trusted project and `/profile set work`, the command writes `authProfile: "work"` to that project's `.pi/settings.json` and tells the user to exit Pi and start a new process. `/profile use work` retains that behavior and tells the user that it is deprecated.
 - Given `/profile default work`, the command writes `defaultProfile: "work"` to `~/.pi/agent/auth-profiles.json` and tells the user to exit Pi and start a new process.
 - Given a trusted project and `/profile clear`, the command removes that project's profile setting and tells the user to exit Pi and start a new process.
 - The active credential binding does not change during the current process. Only `session_start` with reason `startup` resolves configuration; fresh-runtime reasons such as `new`, `resume`, and `fork` bind the profile and file path captured at startup. `/reload` retains the runtime and does not activate profile changes.
@@ -31,7 +31,7 @@ Command handlers only update their respective JSON settings file. They do not wa
 In an isolated Pi agent directory:
 
 1. Start Pi in a project configured for `default` and log in to Anthropic.
-2. Run `/profile use work` and confirm the command reports that a full Pi process restart is required.
+2. Run `/profile set work` and confirm the command reports that a full Pi process restart is required. Run `/profile use work` and confirm it also reports that the alias is deprecated.
 3. Run `/new`, `/resume`, and `/fork` after changing the configured profile, and confirm each binds the original `default` profile without reading the changed configuration. Confirm `/profile show` reports `default` for each fresh runtime.
 4. Run `/reload` and confirm it does not rebind or refresh credentials. Confirm `/profile show` still reports the original active profile and shows `work` as configured after restart.
 5. Before restarting, confirm `/login` still uses the `default` profile.
