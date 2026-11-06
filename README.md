@@ -93,6 +93,10 @@ Credential storage resolves its profile and file path only during a full Pi proc
 
 `.pi/settings.json` is committable, so a team repo can pin a profile name without sharing credentials. For personal use in a shared repo, you should prefer using the parent folder method.
 
+### Login notice
+
+Pi always prints "Credentials saved to ~/.pi/agent/auth.json" after `/login`, even when a profile is active. With a non-default profile, the extension also shows `Saved <provider> credentials to <profile file> (profile: <name>)` when a login stores a new credential or changes its API key or refresh token. Token refreshes with the same secret and logouts show no notice.
+
 ## Notes
 
 - Profiles are isolated: a profile does **not** fall back to `auth.json` for

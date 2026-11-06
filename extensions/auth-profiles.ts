@@ -181,14 +181,65 @@ function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">)
 
 type InternalAuthStorage = {
 	constructor: { create(path?: string): InternalAuthStorage };
+	modify?: (providerId: string, fn: (current: unknown) => unknown, options?: unknown) => Promise<unknown>;
 };
 
 type InternalRuntime = {
 	credentials?: { store?: InternalAuthStorage };
 };
 
+type Notifier = (message: string) => void;
+
+/** Secret that identifies a credential: API key or OAuth refresh token. */
+function credentialSecret(credential: unknown): unknown {
+	if (!credential || typeof credential !== "object") return undefined;
+	const { key, refresh } = credential as { key?: unknown; refresh?: unknown };
+	return key ?? refresh;
+}
+
+const notifyingStores = new WeakSet<object>();
+
+/**
+ * Pi prints a hardcoded "Credentials saved to ~/.pi/agent/auth.json" after login.
+ * Wrap the profile store's `modify` so a new or changed credential also reports
+ * the real file. Unchanged credentials (token refreshes) and deletions stay silent.
+ * Each bind wraps a freshly created store once; the WeakSet guards re-wrapping.
+ */
+function notifyOnLogin(store: InternalAuthStorage, binding: ProfileBinding, notify: Notifier): void {
+	const modify = store.modify;
+	if (typeof modify !== "function" || notifyingStores.has(store)) return;
+	notifyingStores.add(store);
+	store.modify = async function (this: unknown, providerId, fn, options) {
+		let before: unknown;
+		let after: unknown;
+		const result = await modify.call(
+			this ?? store,
+			providerId,
+			async (current: unknown) => {
+				before = current;
+				after = await fn(current);
+				return after;
+			},
+			options,
+		);
+		const secret = credentialSecret(after);
+		if (after !== undefined && secret !== undefined && secret !== credentialSecret(before)) {
+			try {
+				notify(`Saved ${providerId} credentials to ${binding.path} (profile: ${binding.profile})`);
+			} catch {
+				// A notice failure must not fail the credential write.
+			}
+		}
+		return result;
+	};
+}
+
 /** Point the session's live credential store at a previously selected profile file. */
-async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, path: string): Promise<void> {
+async function bindProfile(
+	ctx: Pick<ExtensionContext, "modelRegistry">,
+	binding: ProfileBinding,
+	notify: Notifier,
+): Promise<void> {
 	// Pi no longer exposes its file-auth backend to extensions. Reuse the active
 	// store's factory so Pi retains its own locking, permissions, and reload logic.
 	const runtime = (ctx.modelRegistry as unknown as { runtime?: InternalRuntime }).runtime;
@@ -197,7 +248,9 @@ async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, path: s
 	if (!runtime || !store || typeof create !== "function") {
 		throw new Error("Auth profiles is incompatible with this version of pi: credential storage cannot be switched.");
 	}
-	runtime.credentials!.store = create.call(store.constructor, path);
+	const profileStore = create.call(store.constructor, binding.path);
+	if (binding.profile !== DEFAULT_PROFILE) notifyOnLogin(profileStore, binding, notify);
+	runtime.credentials!.store = profileStore;
 
 	// Refresh Pi's provider-auth status after binding during session startup.
 	await ctx.modelRegistry.refresh({ allowNetwork: false });
@@ -235,9 +288,9 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 
 export default function (pi: ExtensionAPI) {
 	const state = processProfileState();
-	const bind = async (ctx: Pick<ExtensionContext, "modelRegistry">, binding: ProfileBinding) => {
+	const bind = async (ctx: Pick<ExtensionContext, "modelRegistry" | "ui">, binding: ProfileBinding) => {
 		state.activeBinding = undefined;
-		await bindProfile(ctx, binding.path);
+		await bindProfile(ctx, binding, (message) => ctx.ui.notify(message, "info"));
 		state.activeBinding = binding;
 	};
 

@@ -32,6 +32,15 @@ class Store {
 	static create(path?: string) {
 		return new Store(path);
 	}
+
+	data: Record<string, unknown> = {};
+
+	async modify(provider: string, fn: (current: unknown) => unknown | Promise<unknown>) {
+		const next = await fn(this.data[provider]);
+		if (next === undefined) return this.data[provider];
+		this.data[provider] = next;
+		return next;
+	}
 }
 
 function createApi(extension = installExtension) {
@@ -145,4 +154,41 @@ test("uses set as the canonical project-profile command and retains use as a dep
 	await profile("set denied", untrusted);
 	expect(readFileSync(settingsPath, "utf8")).toBe('{\n\t"authProfile": "personal"\n}\n');
 	expect(untrusted.notifications.at(-1)).toBe("Project is not trusted; cannot set a project auth profile here.");
+});
+
+test("notifies the real profile file on login but not on refresh, logout, or default profile", async () => {
+	agentDir = mkdtempSync(join(tmpdir(), "pi-auth-profiles-"));
+	mkdirSync(join(agentDir, "auth-profiles"), { recursive: true });
+	writeFileSync(join(agentDir, "auth-profiles.json"), '{"defaultProfile":"work"}\n');
+	const workPath = join(agentDir, "auth-profiles", "work.json");
+
+	const startup = createContext();
+	await createApi().sessionStart({ reason: "startup" }, startup);
+	// Re-binding on new/resume/fork must not stack notifications.
+	for (const reason of ["new", "resume", "fork"] as const) {
+		await (await createReloadedApi()).sessionStart({ reason }, startup);
+	}
+	startup.notifications.length = 0;
+	const store = startup.modelRegistry.runtime.credentials.store;
+
+	await store.modify("anthropic", () => ({ type: "oauth", access: "a1", refresh: "r1", expires: 1 }));
+	expect(startup.notifications).toEqual([`Saved anthropic credentials to ${workPath} (profile: work)`]);
+
+	// Token refresh: same refresh token, new access token.
+	await store.modify("anthropic", () => ({ type: "oauth", access: "a2", refresh: "r1", expires: 2 }));
+	// No-op and logout-style (undefined) results.
+	await store.modify("anthropic", () => undefined);
+	expect(startup.notifications).toHaveLength(1);
+
+	await store.modify("openai", () => ({ type: "api_key", key: "k1" }));
+	await store.modify("openai", () => ({ type: "api_key", key: "k2" }));
+	expect(startup.notifications).toHaveLength(3);
+
+	const fresh = createContext();
+	writeFileSync(join(agentDir, "auth-profiles.json"), '{"defaultProfile":"default"}\n');
+	delete (globalThis as { [key: symbol]: unknown })[processProfileStateKey];
+	await createApi().sessionStart({ reason: "startup" }, fresh);
+	fresh.notifications.length = 0;
+	await fresh.modelRegistry.runtime.credentials.store.modify("openai", () => ({ type: "api_key", key: "k" }));
+	expect(fresh.notifications).toEqual([]);
 });
