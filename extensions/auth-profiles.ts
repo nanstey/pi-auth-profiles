@@ -140,6 +140,12 @@ type ProfileBinding = {
 	path: string;
 };
 
+// Pi recreates extension factories for fresh runtimes. Module state persists for
+// the Pi process, so these retain the process-start selection without surviving
+// a true process restart.
+let startupBinding: ProfileBinding | undefined;
+let activeBinding: ProfileBinding | undefined;
+
 function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ProfileBinding {
 	const resolve = (profile: string, source: string): ProfileBinding => ({ profile, source, path: authPathFor(profile) });
 	if (ctx.isProjectTrusted()) {
@@ -219,10 +225,6 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 }
 
 export default function (pi: ExtensionAPI) {
-	// A reloaded extension cannot inspect the runtime's retained credential binding.
-	let startupBinding: ProfileBinding | undefined;
-	let activeBinding: ProfileBinding | undefined;
-
 	const bind = async (ctx: Pick<ExtensionContext, "modelRegistry">, binding: ProfileBinding) => {
 		activeBinding = undefined;
 		await bindProfile(ctx, binding.path);
@@ -230,16 +232,19 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (event, ctx) => {
-		// /reload retains its runtime. A fresh runtime must reuse the profile and
-		// path selected at process startup instead of reading changed configuration.
-		if (event.reason === "reload") {
+		// /reload retains its runtime. Fresh runtimes reuse the profile and path
+		// selected at process startup instead of reading changed configuration.
+		if (event.reason === "reload") return;
+		if (event.reason === "startup") {
+			startupBinding = resolveProfile(ctx);
+		} else if (!(["new", "resume", "fork"] as const).includes(event.reason)) {
+			return;
+		}
+		if (!startupBinding) {
+			// Defensive only: Pi normally emits startup before any fresh runtime.
 			activeBinding = undefined;
 			return;
 		}
-		if (event.reason === "startup") {
-			startupBinding = resolveProfile(ctx);
-		}
-		if (!startupBinding) return;
 
 		await bind(ctx, startupBinding);
 		if (event.reason === "startup" && startupBinding.profile !== DEFAULT_PROFILE) {

@@ -88,7 +88,7 @@ A linked worktree outside the parent folder (for example Orca's `~/orca/workspac
 
 ### Session startup
 
-Credential storage resolves its profile and file path only during a full Pi process startup, after trust is resolved. Fresh runtimes from `/new`, `/resume`, and `/fork` reuse that original binding without reading changed configuration. `/profile use`, `/profile default`, and `/profile clear` only save configuration, so exit Pi and start a new process before `/login`, `/logout`, and OAuth refresh use the changed profile. `/reload` retains its runtime and does not activate profile changes; after it reloads the extension, `/profile show` reports the active profile as unavailable until Pi restarts.
+Credential storage resolves its profile and file path only during a full Pi process startup, after trust is resolved. Fresh runtimes from `/new`, `/resume`, and `/fork` reuse that original binding without reading changed configuration. `/profile use`, `/profile default`, and `/profile clear` only save configuration, so exit Pi and start a new process before `/login`, `/logout`, and OAuth refresh use the changed profile. `/reload` retains its runtime and does not activate profile changes; `/profile show` continues to report the process-start binding and any configuration that will apply after restart.
 
 `.pi/settings.json` is committable, so a team repo can pin a profile name without sharing credentials. For personal use in a shared repo, you should prefer using the parent folder method.
 
