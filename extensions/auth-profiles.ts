@@ -118,14 +118,18 @@ function persistedTrustedRoot(cwd: string): string | undefined {
  */
 function mainWorktreeRoot(cwd: string): string | undefined {
 	try {
-		const commonDir = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-			timeout: 2000,
-		}).trim();
-		if (!commonDir || basename(commonDir) !== ".git") return undefined;
+		const [toplevel, commonDir] = execFileSync(
+			"git",
+			["-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 },
+		)
+			.trim()
+			.split("\n");
+		if (!toplevel || !commonDir || basename(commonDir) !== ".git") return undefined;
 		const root = canonicalPath(dirname(commonDir));
-		return root === canonicalPath(cwd) ? undefined : root;
+		// Only a linked worktree qualifies; a subdirectory of the main checkout
+		// must not skip the persisted-trust walk that stopped at cwd.
+		return root === canonicalPath(toplevel) ? undefined : root;
 	} catch {
 		return undefined;
 	}
