@@ -47,7 +47,7 @@ Each profile is a separate credential file:
 | `default` | `~/.pi/agent/auth.json`               |
 | `<name>`  | `~/.pi/agent/auth-profiles/<name>.json` |
 
-The active profile is resolved per session, first match wins:
+The active profile is resolved at full Pi process startup, then reused for fresh sessions in that process. The first match wins:
 
 1. `"authProfile"` in the nearest eligible `.pi/settings.json` at or above the working directory — trusted sessions always consider cwd; ancestors require an unbroken persisted-trust chain
 2. `"defaultProfile"` in `~/.pi/agent/auth-profiles.json`
