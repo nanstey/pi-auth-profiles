@@ -15,6 +15,8 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 }));
 
 const { default: installExtension } = await import("../extensions/auth-profiles.ts");
+const processProfileStateKey = Symbol.for("@nanstey/pi-auth-profiles/process-profile-state");
+let reloadEvaluation = 0;
 
 type SessionReason = "startup" | "reload" | "new" | "resume" | "fork";
 type Handler = (event: { reason: SessionReason }, ctx: ReturnType<typeof createContext>) => Promise<void>;
@@ -28,10 +30,10 @@ class Store {
 	}
 }
 
-function createApi() {
+function createApi(extension = installExtension) {
 	let sessionStart: Handler | undefined;
 	let profile: CommandHandler | undefined;
-	installExtension({
+	extension({
 		on(event: string, handler: Handler) {
 			if (event === "session_start") sessionStart = handler;
 		},
@@ -41,6 +43,11 @@ function createApi() {
 	} as never);
 	if (!sessionStart || !profile) throw new Error("Extension did not register its session handler and profile command.");
 	return { sessionStart, profile };
+}
+
+async function createReloadedApi() {
+	const { default: reloadedExtension } = await import(`../extensions/auth-profiles.ts?reload=${reloadEvaluation++}`);
+	return createApi(reloadedExtension);
 }
 
 function createContext() {
@@ -67,9 +74,10 @@ function createContext() {
 afterEach(() => {
 	if (agentDir) rmSync(agentDir, { recursive: true, force: true });
 	agentDir = "";
+	delete (globalThis as { [key: symbol]: unknown })[processProfileStateKey];
 });
 
-test("preserves the process-start profile across recreated extension factories", async () => {
+test("preserves the process-start profile across recreated factories and module re-evaluation", async () => {
 	agentDir = mkdtempSync(join(tmpdir(), "pi-auth-profiles-"));
 	mkdirSync(join(agentDir, "auth-profiles"), { recursive: true });
 	writeFileSync(join(agentDir, "auth-profiles.json"), '{"defaultProfile":"startup"}\n');
@@ -81,24 +89,23 @@ test("preserves the process-start profile across recreated extension factories",
 	expect(startup.refreshes).toEqual([startupPath]);
 
 	writeFileSync(join(agentDir, "auth-profiles.json"), '{"defaultProfile":"changed"}\n');
-	let activeRuntime = startup;
-	for (const reason of ["new", "resume", "fork"] as const) {
-		const freshFactory = createApi();
-		activeRuntime = createContext();
-		await freshFactory.sessionStart({ reason }, activeRuntime);
-		expect(activeRuntime.refreshes).toEqual([startupPath]);
+	const reloadFactory = await createReloadedApi();
+	await reloadFactory.sessionStart({ reason: "reload" }, startup);
+	expect(startup.refreshes).toEqual([startupPath]);
+	await reloadFactory.profile("show", startup);
+	expect(startup.notifications.at(-1)).toContain("Auth profile: startup (global default)");
 
-		await freshFactory.profile("show", activeRuntime);
-		const profile = activeRuntime.notifications.at(-1) ?? "";
+	for (const reason of ["new", "resume", "fork"] as const) {
+		const freshFactory = await createReloadedApi();
+		const freshRuntime = createContext();
+		await freshFactory.sessionStart({ reason }, freshRuntime);
+		expect(freshRuntime.refreshes).toEqual([startupPath]);
+
+		await freshFactory.profile("show", freshRuntime);
+		const profile = freshRuntime.notifications.at(-1) ?? "";
 		expect(profile).toContain("Auth profile: startup (global default)");
 		expect(profile).toContain(`File: ${startupPath}`);
 		expect(profile).toContain("Configured after restart: changed (global default)");
 		expect(profile).not.toContain("unavailable");
 	}
-
-	const reloadFactory = createApi();
-	await reloadFactory.sessionStart({ reason: "reload" }, activeRuntime);
-	expect(activeRuntime.refreshes).toEqual([startupPath]);
-	await reloadFactory.profile("show", activeRuntime);
-	expect(activeRuntime.notifications.at(-1)).toContain("Auth profile: startup (global default)");
 });

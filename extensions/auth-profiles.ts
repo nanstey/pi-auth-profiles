@@ -140,11 +140,19 @@ type ProfileBinding = {
 	path: string;
 };
 
-// Pi recreates extension factories for fresh runtimes. Module state persists for
-// the Pi process, so these retain the process-start selection without surviving
-// a true process restart.
-let startupBinding: ProfileBinding | undefined;
-let activeBinding: ProfileBinding | undefined;
+type ProcessProfileState = {
+	startupBinding?: ProfileBinding;
+	activeBinding?: ProfileBinding;
+};
+
+// Pi evaluates extension modules again on /reload. A process-global symbol keeps
+// the process-start selection across those evaluations, but vanishes on exit.
+const processProfileStateKey = Symbol.for("@nanstey/pi-auth-profiles/process-profile-state");
+
+function processProfileState(): ProcessProfileState {
+	const stateHost = globalThis as typeof globalThis & { [key: symbol]: ProcessProfileState | undefined };
+	return (stateHost[processProfileStateKey] ??= {});
+}
 
 function resolveProfile(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ProfileBinding {
 	const resolve = (profile: string, source: string): ProfileBinding => ({ profile, source, path: authPathFor(profile) });
@@ -225,10 +233,11 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 }
 
 export default function (pi: ExtensionAPI) {
+	const state = processProfileState();
 	const bind = async (ctx: Pick<ExtensionContext, "modelRegistry">, binding: ProfileBinding) => {
-		activeBinding = undefined;
+		state.activeBinding = undefined;
 		await bindProfile(ctx, binding.path);
-		activeBinding = binding;
+		state.activeBinding = binding;
 	};
 
 	pi.on("session_start", async (event, ctx) => {
@@ -236,19 +245,19 @@ export default function (pi: ExtensionAPI) {
 		// selected at process startup instead of reading changed configuration.
 		if (event.reason === "reload") return;
 		if (event.reason === "startup") {
-			startupBinding = resolveProfile(ctx);
+			state.startupBinding = resolveProfile(ctx);
 		} else if (!(["new", "resume", "fork"] as const).includes(event.reason)) {
 			return;
 		}
-		if (!startupBinding) {
+		if (!state.startupBinding) {
 			// Defensive only: Pi normally emits startup before any fresh runtime.
-			activeBinding = undefined;
+			state.activeBinding = undefined;
 			return;
 		}
 
-		await bind(ctx, startupBinding);
-		if (event.reason === "startup" && startupBinding.profile !== DEFAULT_PROFILE) {
-			ctx.ui.notify(`Auth profile: ${startupBinding.profile} (${startupBinding.source})`, "info");
+		await bind(ctx, state.startupBinding);
+		if (event.reason === "startup" && state.startupBinding.profile !== DEFAULT_PROFILE) {
+			ctx.ui.notify(`Auth profile: ${state.startupBinding.profile} (${state.startupBinding.source})`, "info");
 		}
 	});
 
@@ -271,7 +280,7 @@ export default function (pi: ExtensionAPI) {
 				switch (command ?? "show") {
 					case "show": {
 						const configured = resolveProfile(ctx);
-						if (activeBinding === undefined) {
+						if (state.activeBinding === undefined) {
 							ctx.ui.notify(
 								"Active auth profile unavailable until Pi restarts.\n" +
 									`Configured after restart: ${configured.profile} (${configured.source})`,
@@ -279,14 +288,14 @@ export default function (pi: ExtensionAPI) {
 							);
 							return;
 						}
-						const providers = providersIn(activeBinding.path);
+						const providers = providersIn(state.activeBinding.path);
 						const configuredAfterRestart =
-							configured.profile === activeBinding.profile
+							configured.profile === state.activeBinding.profile
 								? ""
 								: `\nConfigured after restart: ${configured.profile} (${configured.source})`;
 						ctx.ui.notify(
-							`Auth profile: ${activeBinding.profile} (${activeBinding.source})\n` +
-								`File: ${activeBinding.path}\n` +
+							`Auth profile: ${state.activeBinding.profile} (${state.activeBinding.source})\n` +
+								`File: ${state.activeBinding.path}\n` +
 								`Providers: ${providers.length ? providers.join(", ") : "none — run /login"}` +
 								configuredAfterRestart,
 							"info",
@@ -295,7 +304,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					case "list": {
 						const lines = listProfiles().map((name) => {
-							const marker = name === activeBinding?.profile ? "* " : "  ";
+							const marker = name === state.activeBinding?.profile ? "* " : "  ";
 							const providers = providersIn(authPathFor(name));
 							return `${marker}${name} (${providers.length ? providers.join(", ") : "no credentials"})`;
 						});
