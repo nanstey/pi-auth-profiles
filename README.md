@@ -16,9 +16,9 @@ pi install npm:@nanstey/pi-auth-profiles
 ```
 /profile                 show the active profile, its file, and providers
 /profile list            list all profiles and their providers
-/profile use <name>      set this project's profile for the next Pi session
-/profile default <name>  set the global fallback profile for the next Pi session
-/profile clear           remove this project's profile setting for the next Pi session
+/profile use <name>      set this project's profile for the next Pi process
+/profile default <name>  set the global fallback profile for the next Pi process
+/profile clear           remove this project's profile setting for the next Pi process
 ```
 
 `/profile use` and `/profile clear` require the current project to be trusted.
@@ -34,7 +34,7 @@ pi
 Configure auth profile:
 ```
 /profile use work        # configure the "work" profile
-# restart Pi
+# exit Pi and start a new process
 /login                   # credentials are saved to the work profile
 ```
 
@@ -88,7 +88,7 @@ A linked worktree outside the parent folder (for example Orca's `~/orca/workspac
 
 ### Session startup
 
-Credential storage is bound at `session_start`, after trust is resolved. `/profile use`, `/profile default`, and `/profile clear` only save configuration. Restart Pi before `/login`, `/logout`, and OAuth refresh use the changed profile.
+Credential storage binds only during a full Pi process startup, after trust is resolved. `/profile use`, `/profile default`, and `/profile clear` only save configuration. Exit Pi and start a new process before `/login`, `/logout`, and OAuth refresh use the changed profile. `/reload` reloads the extension in the existing runtime and does not activate profile changes.
 
 `.pi/settings.json` is committable, so a team repo can pin a profile name without sharing credentials. For personal use in a shared repo, you should prefer using the parent folder method.
 
@@ -99,6 +99,7 @@ Credential storage is bound at `session_start`, after trust is resolved. `/profi
   when providers rotate refresh tokens. Environment variables
   (`ANTHROPIC_API_KEY`, …) and `models.json` keys apply in every profile.
 - Profile names may contain letters, numbers, dots, underscores, and dashes.
+- Pi chooses its initial model before extensions receive `session_start`. If `auth.json` and the selected profile differ, explicitly select the model after startup. Automatic initial-model profile authentication requires upstream lifecycle support.
 
 ## License
 

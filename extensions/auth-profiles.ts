@@ -16,8 +16,8 @@
  * This lets a directory such as ~/Code/noelcf/.pi/settings.json select a
  * profile for every repository below ~/Code/noelcf without duplicating it.
  *
- * The extension binds the AuthStorage backend at session_start. Profile commands
- * only persist configuration; restart Pi before the selected profile becomes active.
+ * The extension binds the AuthStorage backend only during a full Pi process startup.
+ * Profile commands only persist configuration; /reload does not activate profile changes.
  *
  * Commands:
  *   /profile                 show the active profile
@@ -214,8 +214,9 @@ function updateJsonFile(path: string, update: (data: Record<string, unknown>) =>
 }
 
 export default function (pi: ExtensionAPI) {
-	let activeProfile = DEFAULT_PROFILE;
-	let activeSource = "built-in default";
+	// A reloaded extension cannot inspect the runtime's retained credential binding.
+	let activeProfile: string | undefined;
+	let activeSource: string | undefined;
 
 	const bindAtSessionStart = async (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "modelRegistry">) => {
 		const { profile, source } = resolveProfile(ctx);
@@ -225,7 +226,9 @@ export default function (pi: ExtensionAPI) {
 		return { profile, source };
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		// /reload starts extensions again but retains the running model runtime.
+		if (event.reason !== "startup") return;
 		const { profile, source } = await bindAtSessionStart(ctx);
 		if (profile !== DEFAULT_PROFILE) {
 			ctx.ui.notify(`Auth profile: ${profile} (${source})`, "info");
@@ -251,6 +254,14 @@ export default function (pi: ExtensionAPI) {
 				switch (command ?? "show") {
 					case "show": {
 						const configured = resolveProfile(ctx);
+						if (activeProfile === undefined || activeSource === undefined) {
+							ctx.ui.notify(
+								"Active auth profile unavailable until Pi restarts.\n" +
+									`Configured after restart: ${configured.profile} (${configured.source})`,
+								"info",
+							);
+							return;
+						}
 						const providers = providersIn(activeProfile);
 						const configuredAfterRestart =
 							configured.profile === activeProfile
@@ -287,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 						});
 						ctx.ui.notify(
 							`Project auth profile set to ${profile}. Settings: ${settingsPath}\n` +
-								"Restart Pi before this profile becomes active.",
+								"Restart the Pi process before this profile becomes active. /reload does not activate profile changes.",
 							"info",
 						);
 						return;
@@ -300,7 +311,7 @@ export default function (pi: ExtensionAPI) {
 						});
 						ctx.ui.notify(
 							`Global default auth profile set to ${profile}.\n` +
-								"Restart Pi before this setting can affect the active profile.",
+								"Restart the Pi process before this setting can affect the active profile. /reload does not activate profile changes.",
 							"info",
 						);
 						return;
@@ -317,7 +328,7 @@ export default function (pi: ExtensionAPI) {
 							});
 						}
 						ctx.ui.notify(
-							"Project auth profile cleared. Restart Pi before the configured profile changes the active profile.",
+							"Project auth profile cleared. Restart the Pi process before the configured profile changes the active profile. /reload does not activate profile changes.",
 							"info",
 						);
 						return;
