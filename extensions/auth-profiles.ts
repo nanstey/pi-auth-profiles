@@ -27,7 +27,7 @@
  *   /profile default <name>  set the global fallback profile
  *   /profile clear           remove this project's profile setting
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -164,7 +164,6 @@ type InternalAuthStorage = {
 
 type InternalRuntime = {
 	credentials?: { store?: InternalAuthStorage };
-	forceRefreshAvailability?: () => Promise<unknown>;
 };
 
 /** Point the session's live credential store at the profile's file. */
@@ -180,11 +179,9 @@ async function bindProfile(ctx: Pick<ExtensionContext, "modelRegistry">, profile
 	}
 	runtime.credentials!.store = create.call(store.constructor, path);
 
-	// Switching after startup otherwise leaves the model availability snapshot
+	// Switching after startup otherwise leaves Pi's cached provider-auth status
 	// based on the previously selected profile.
-	if (typeof runtime.forceRefreshAvailability === "function") {
-		await runtime.forceRefreshAvailability();
-	}
+	await ctx.modelRegistry.refresh({ allowNetwork: false });
 	return path;
 }
 
@@ -226,6 +223,12 @@ export default function (pi: ExtensionAPI) {
 		const path = await bindProfile(ctx, profile);
 		activeProfile = profile;
 		return { profile, source, path };
+	};
+
+	const updateAndRebindWhenIdle = async (ctx: ExtensionCommandContext, update: () => void) => {
+		await ctx.waitForIdle();
+		update();
+		return rebind(ctx);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -279,10 +282,11 @@ export default function (pi: ExtensionAPI) {
 							ctx.ui.notify("Project is not trusted; cannot set a project auth profile here.", "error");
 							return;
 						}
-						updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
-							settings.authProfile = profile;
+						const { path } = await updateAndRebindWhenIdle(ctx, () => {
+							updateJsonFile(projectSettingsPath(ctx.cwd), (settings) => {
+								settings.authProfile = profile;
+							});
 						});
-						const { path } = await rebind(ctx);
 						ctx.ui.notify(
 							`Project auth profile set to ${profile}. Settings: ${projectSettingsPath(ctx.cwd)}\n` +
 								`/login now saves to ${path}`,
@@ -293,10 +297,11 @@ export default function (pi: ExtensionAPI) {
 					case "default": {
 						if (!rawName) return ctx.ui.notify(usage, "warning");
 						const profile = normalizeName(rawName);
-						updateJsonFile(globalConfigPath(), (config) => {
-							config.defaultProfile = profile;
+						const { profile: active, source } = await updateAndRebindWhenIdle(ctx, () => {
+							updateJsonFile(globalConfigPath(), (config) => {
+								config.defaultProfile = profile;
+							});
 						});
-						const { profile: active, source } = await rebind(ctx);
 						ctx.ui.notify(`Global default auth profile set to ${profile}. Active profile: ${active} (${source})`, "info");
 						return;
 					}
@@ -306,12 +311,13 @@ export default function (pi: ExtensionAPI) {
 							return;
 						}
 						const path = projectSettingsPath(ctx.cwd);
-						if (existsSync(path)) {
-							updateJsonFile(path, (settings) => {
-								delete settings.authProfile;
-							});
-						}
-						const { profile, source } = await rebind(ctx);
+						const { profile, source } = await updateAndRebindWhenIdle(ctx, () => {
+							if (existsSync(path)) {
+								updateJsonFile(path, (settings) => {
+									delete settings.authProfile;
+								});
+							}
+						});
 						ctx.ui.notify(`Project auth profile cleared. Active profile: ${profile} (${source})`, "info");
 						return;
 					}
